@@ -93,8 +93,8 @@ class GarminLinkListener:
             print("Listening for new emails")
 
             while True:
-                # Wait for up to 30 seconds for an IDLE response
-                responses = server.idle_check(timeout=30)
+                # Wait for an IDLE response
+                responses = server.idle_check(timeout=60)
                 print("Server sent:", responses if responses else "nothing")
 
                 if responses:

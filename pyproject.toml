@@ -8,10 +8,10 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.9"
 imapclient = "^3.0.1"
+dotenv = "^0.9.9"
 
 # [tool.poetry.scripts]
 # mkv-editor = "mkv_editor.run:cli"
-dotenv = "^0.9.9"
 
 [build-system]
 requires = ["poetry-core"]
