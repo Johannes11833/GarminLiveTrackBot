@@ -3,15 +3,16 @@ name = "garmin_livetrack"
 version = "0.1.0"
 description = ""
 authors = ["Johannes <24914225+Johannes11833@users.noreply.github.com>"]
-readme = "README.md"
+# readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.9"
 imapclient = "^3.0.1"
 dotenv = "^0.9.9"
+requests = "^2.32.5"
 
-# [tool.poetry.scripts]
-# mkv-editor = "mkv_editor.run:cli"
+[tool.poetry.scripts]
+garmin-livetrack = "garmin_livetrack.main:cli"
 
 [build-system]
 requires = ["poetry-core"]

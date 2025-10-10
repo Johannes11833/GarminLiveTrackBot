@@ -8,17 +8,30 @@ class SignalBot:
         self.sender = sender
         self.recipients = recipients
 
+    def start(self) -> bool:
         setup_done = False
         link_printed = False
 
         while not setup_done:
-            response = requests.get(f"{self.api}/v1/accounts")
+            try:
+                response = requests.get(f"{self.api}/v1/accounts")
 
-            if response.status_code != 200:
-                print(
-                    "ERROR: failed to connect to signal-api. Is the signal-api server running?"
-                )
-                return
+                if response.status_code != 200:
+                    print(
+                        "ERROR: failed to connect to signal-api. Is the signal-api server running?"
+                    )
+                    return False
+            except requests.exceptions.ConnectionError:
+                print("ERROR: Could not connect to signal-api (connection error).")
+                return False
+
+            except requests.exceptions.Timeout:
+                print("ERROR: Request to signal-api timed out.")
+                return False
+
+            except requests.exceptions.RequestException as e:
+                print(f"ERROR: Unexpected issue connecting to signal-api: {e}")
+                return False
 
             devices: list[str] = response.json()
 
@@ -31,7 +44,7 @@ class SignalBot:
                     print(f"Connected number are: {",".join(devices)}")
 
                 print(
-                    f"Open this link to link this device to your signal account: {f"{api}/v1/qrcodelink?device_name=GarminLivetrackBot"}"
+                    f"Open this link to link this device to your signal account: {f"{self.api}/v1/qrcodelink?device_name=GarminLivetrackBot"}"
                 )
 
                 link_printed = True
@@ -40,6 +53,7 @@ class SignalBot:
 
         print(f"SignalBot: sender: {self.sender}")
         print(f'SignalBot: recipient(s): {", ".join(self.recipients)}')
+        return True
 
     def send_message(self, message: str):
         response = requests.post(
