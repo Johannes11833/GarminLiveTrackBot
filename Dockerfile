@@ -35,4 +35,4 @@ COPY garmin_livetrack /app/garmin_livetrack
 
 WORKDIR /app
 
-ENTRYPOINT ["python", "-m", "garmin_livetrack.main"]
+ENTRYPOINT ["python", "-u", "-m", "garmin_livetrack.main"]

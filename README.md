@@ -1,8 +1,21 @@
 ### Docker Setup
+#### Startup signal-api manually
+```bash
+docker run --rm --name signal-api -p 8080:8080 -v signal-api:/home/.local/share/signal-cli -e 'MODE=normal' bbernhard/signal-cli-rest-api
+```
+
+#### Docker compose setup
 ```yml
 version: "3"
 services:
-  signal-cli-rest-api:
+  garmin-livetrack:
+    image: garmin-livetrack
+    env_file:
+      - .env
+    environment:
+      - LIVETRACK_SIGNAL_API: http://signal-api:8080
+
+  signal-api:
     image: bbernhard/signal-cli-rest-api:latest
     environment:
       - MODE=normal #supported modes: json-rpc, native, normal
