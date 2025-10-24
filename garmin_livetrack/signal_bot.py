@@ -1,3 +1,4 @@
+from pathlib import Path
 from time import sleep
 import requests
 
@@ -8,9 +9,21 @@ class SignalBot:
         self.sender = sender
         self.recipients = recipients
 
+    def ping(self) -> bool:
+        for i in range(10):
+            response = requests.get(f"{self.api}/v1/about")
+            if response.status_code == 200:
+                return True
+            sleep(0.5)
+
+        return False
+
     def start(self) -> bool:
         setup_done = False
         link_printed = False
+
+        if not self.ping():
+            return False
 
         while not setup_done:
             try:
@@ -43,13 +56,28 @@ class SignalBot:
                 if len(devices) > 0:
                     print(f"Connected number are: {",".join(devices)}")
 
-                print(
-                    f"Open this link to link this device to your signal account: {f"{self.api}/v1/qrcodelink?device_name=GarminLivetrackBot"}"
+                response = requests.get(
+                    f"{self.api}/v1/qrcodelink?device_name=GarminLivetrackBot"
                 )
+
+                if response.status_code != 200:
+                    print(
+                        "ERROR: failed generate tge QR code. Is the signal-api server running?"
+                    )
+                    return False
+
+                qr_code_file = Path("garmin-livetrack-data/signal_qr_code.png")
+
+                with open(qr_code_file, "wb") as f:
+                    f.write(response.content)
+
+                print(f"Scan the QR code to continue: {qr_code_file.absolute()}")
 
                 link_printed = True
 
-            sleep(1)
+        if not setup_done:
+            # failed to initialize
+            return False
 
         print(f"SignalBot: sender: {self.sender}")
         print(f'SignalBot: recipient(s): {", ".join(self.recipients)}')
