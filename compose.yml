@@ -1,7 +1,7 @@
 version: "3"
 services:
   garmin-livetrack:
-    image: garmin-livetrack
+    image: ghcr.io/johannes11833/garmin-livetrack-bot:latest
     env_file:
       - .env
     volumes:
