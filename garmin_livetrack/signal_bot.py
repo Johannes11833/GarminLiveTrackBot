@@ -53,13 +53,20 @@ class SignalBot:
 
         print(f"SignalBot: sender: {self.sender}")
         print(f'SignalBot: recipient(s): {", ".join(self.recipients)}')
+
+        # Send the startup notice only to the sender
+        self.send_message(
+            f"GarminLiveTrackBot started 🤖\n\nThe following {len(self.recipients)} recipient(s) are configured: {', '.join(self.recipients)}",
+            recipients=[self.sender],
+        )
+
         return True
 
-    def send_message(self, message: str):
+    def send_message(self, message: str, recipients: list[str] | None = None):
         response = requests.post(
             f"{self.api}/v2/send",
             json={
-                "recipients": self.recipients,
+                "recipients": recipients if recipients else self.recipients,
                 "number": self.sender,
                 "message": message,
             },

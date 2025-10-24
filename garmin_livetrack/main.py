@@ -5,11 +5,11 @@ from garmin_livetrack.mail_listener import GarminLinkListener
 from garmin_livetrack.signal_bot import SignalBot
 
 
-bot = None
+bot: SignalBot = None
 
 
 def send_message(link: str):
-    bot.send_message(f"Ich fahre gerade mit dem Radel🚲: {link}")
+    bot.send_message(f"Schau dir meine Fahrradfahrt live an🚲: {link}")
 
 
 def cli():

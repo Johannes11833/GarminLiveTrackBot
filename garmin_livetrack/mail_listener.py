@@ -90,7 +90,7 @@ class GarminLinkListener:
 
             # Start IDLE mode
             server.idle()
-            print("Listening for new emails")
+            print("Listening for new garmin emails")
 
             while True:
                 # Wait for an IDLE response
