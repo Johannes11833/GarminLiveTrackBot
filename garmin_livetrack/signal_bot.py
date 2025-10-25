@@ -12,7 +12,7 @@ class SignalBot:
     def ping(self) -> bool:
         for _ in range(10):
             try:
-                response = requests.get(f"{self.api}/v1/about")
+                response = requests.get(f"{self.api}/v1/about", timeout=2)
                 if response.status_code == 200:
                     return True
             except requests.exceptions.ConnectionError:
