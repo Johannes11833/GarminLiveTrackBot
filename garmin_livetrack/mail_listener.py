@@ -1,7 +1,7 @@
 import datetime
 import email
 import re
-from time import sleep
+import time
 from typing import Callable
 from imaplib import IMAP4
 from imapclient import IMAPClient
@@ -20,9 +20,10 @@ class GarminLinkListener:
         host: str,
         username: str,
         password: str,
-        # 10 minute default timeout as mentioned here:
+        # 5 minute default timeout as mentioned here:
         # https://imapclient.readthedocs.io/en/3.0.0/advanced.html#watching-a-mailbox-using-idle
-        idle_timeout_s: int = 60 * 10,
+        idle_timeout_s: int = 5 * 60,
+        resync_interval_s: int = 15 * 60,
         callback: Callable[[str], None] | None = None,
     ):
         """
@@ -32,6 +33,7 @@ class GarminLinkListener:
         self.username = username
         self.password = password
         self.idle_timeout_s = idle_timeout_s
+        self.resync_interval_s = resync_interval_s
         self.callback = callback
 
     def __extract_garmin_link(self, msg) -> str | None:
@@ -83,12 +85,13 @@ class GarminLinkListener:
                     "noreply@garmin.com",
                 ]
             )
-        except (IMAP4.abort, IMAP4.error):
-            delay_s = 60
+        except (IMAP4.abort, IMAP4.error, TimeoutError):
+            # wait, then retry to fetch new garmin messages
+            delay_s = 60 * 5
             logger.warning(
                 f"Failed to search for garmin messages. Retry in {delay_s}s."
             )
-            sleep(delay_s)
+            time.sleep(delay_s)
             return self.__process_unseen_messages(server=server)
 
         for uid, message_data in reversed(server.fetch(messages, "RFC822").items()):
@@ -108,10 +111,10 @@ class GarminLinkListener:
 
     def start(self):
         with IMAPClient(host=self.host) as server:
+            last_sync = 0
             server.login(self.username, self.password)
             logger.info(f"Successfully logged in to: {self.username}")
             server.select_folder("INBOX", readonly=False)
-            server.idle()
 
             # Start IDLE mode
             logger.info(
@@ -119,18 +122,37 @@ class GarminLinkListener:
             )
 
             while True:
-                # check if a new livetrack email has been received
-                server.idle_done()
-                self.__process_unseen_messages(server)
-                server.idle()
 
                 # Wait for an IDLE response
+                server.idle()
                 responses = server.idle_check(timeout=self.idle_timeout_s)
                 logger.info(f'Server sent: {responses if responses else "nothing"}')
+                server.idle_done()
 
-                if responses:
-                    for _, status in responses:
-                        if status == b"EXISTS":
-                            continue
+                should_check = False
+                if self.__check_responses(responses=responses):
+                    should_check = True
+
+                # Periodic NOOP (to check connection and sync)
+                if (not should_check) and (
+                    time.time() - last_sync >= self.resync_interval_s
+                ):
+                    logger.info("Performing periodic NOOP to stay synced...")
+                    _, responses = server.noop()
+                    last_sync = time.time()
+
+                    if self.__check_responses(responses=responses):
+                        should_check = True
+
+                if should_check:
+                    # check if a new livetrack email has been received
+                    self.__process_unseen_messages(server)
 
         logger.info("\nIDLE mode done")
+
+    def __check_responses(self, responses) -> bool:
+        if responses:
+            for _, status in responses:
+                if status == b"EXISTS":
+                    return True
+        return False
