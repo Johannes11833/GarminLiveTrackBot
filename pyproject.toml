@@ -10,6 +10,7 @@ python = "^3.9"
 imapclient = "^3.0.1"
 dotenv = "^0.9.9"
 requests = "^2.32.5"
+rich = "^14.2.0"
 
 [tool.poetry.scripts]
 garmin-livetrack = "garmin_livetrack.main:cli"

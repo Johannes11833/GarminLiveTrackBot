@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 
+from garmin_livetrack.logger import configure_logs
 from garmin_livetrack.mail_listener import GarminLinkListener
 from garmin_livetrack.signal_bot import SignalBot
 
@@ -28,6 +29,8 @@ def cli():
     DEVICE_NAME = os.getenv(
         "LIVETRACK_SIGNAL_DEVICE_NAME", default="GarminLivetrackBot"
     )
+
+    configure_logs()
 
     # Setup the bot
     global bot

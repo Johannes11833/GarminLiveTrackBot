@@ -8,6 +8,11 @@ from imapclient import IMAPClient
 import imapclient as imapclient
 
 
+from garmin_livetrack.logger import get_logger
+
+logger = get_logger(__name__)
+
+
 class GarminLinkListener:
 
     def __init__(
@@ -80,15 +85,17 @@ class GarminLinkListener:
             )
         except (IMAP4.abort, IMAP4.error):
             delay_s = 60
-            print(
-                f"MailListener: failed to search for garmin messages. Retry in {delay_s}s."
+            logger.warning(
+                f"Failed to search for garmin messages. Retry in {delay_s}s."
             )
             sleep(delay_s)
             return self.__process_unseen_messages(server=server)
 
         for uid, message_data in reversed(server.fetch(messages, "RFC822").items()):
             msg = email.message_from_bytes(message_data[b"RFC822"])
-            print(uid, msg.get("From"), msg.get("Subject"))
+            logger.info(
+                f"Found email from {msg.get("From")} with subject {msg.get("Subject")}"
+            )
             link = self.__extract_garmin_link(msg)
 
             # Add the \Seen flag so we won't accidentally process this message again
@@ -102,12 +109,12 @@ class GarminLinkListener:
     def start(self):
         with IMAPClient(host=self.host) as server:
             server.login(self.username, self.password)
-            print(f"Successfully logged in to: {self.username}")
+            logger.info(f"Successfully logged in to: {self.username}")
             server.select_folder("INBOX", readonly=False)
             server.idle()
 
             # Start IDLE mode
-            print(
+            logger.info(
                 f"Listening for new garmin emails using idle timeout: {self.idle_timeout_s}s"
             )
 
@@ -119,11 +126,11 @@ class GarminLinkListener:
 
                 # Wait for an IDLE response
                 responses = server.idle_check(timeout=self.idle_timeout_s)
-                print("Server sent:", responses if responses else "nothing")
+                logger.info(f'Server sent: {responses if responses else "nothing"}')
 
                 if responses:
                     for _, status in responses:
                         if status == b"EXISTS":
                             continue
 
-        print("\nIDLE mode done")
+        logger.info("\nIDLE mode done")

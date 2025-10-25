@@ -2,6 +2,10 @@ from pathlib import Path
 from time import sleep
 import requests
 
+from garmin_livetrack.logger import get_logger
+
+logger = get_logger(__name__)
+
 
 class SignalBot:
     def __init__(self, api: str, sender: str, recipients: list[str], device_name: str):
@@ -11,19 +15,21 @@ class SignalBot:
         self.device_name = device_name
 
     def ping(self) -> bool:
-        print("Pinging the signal-api")
-        for _ in range(20):
+        timeout_s = 20
+        logger.info(f"Pinging the signal-api (timeout={timeout_s}s)")
+        for _ in range(timeout_s):
             try:
                 response = requests.get(f"{self.api}/v1/about", timeout=2)
                 if response.status_code == 200:
+                    logger.info("Successfully connected to the signal-api")
                     return True
             except requests.exceptions.ConnectionError:
                 pass
 
             sleep(1)
 
-        print(
-            f"ERROR: failed to connect to signal-api on: {self.api}. Is the signal-api server running?"
+        logger.error(
+            f"Failed to connect to signal-api on: {self.api}. Is the signal-api server running?"
         )
         return False
 
@@ -39,20 +45,20 @@ class SignalBot:
                 response = requests.get(f"{self.api}/v1/accounts")
 
                 if response.status_code != 200:
-                    print(
-                        "ERROR: failed to connect to signal-api. Is the signal-api server running?"
+                    logger.error(
+                        "Failed to connect to signal-api. Is the signal-api server running?"
                     )
                     return False
             except requests.exceptions.ConnectionError:
-                print("ERROR: Could not connect to signal-api (connection error).")
+                logger.error("Could not connect to signal-api (connection error).")
                 return False
 
             except requests.exceptions.Timeout:
-                print("ERROR: Request to signal-api timed out.")
+                logger.error("Request to signal-api timed out.")
                 return False
 
             except requests.exceptions.RequestException as e:
-                print(f"ERROR: Unexpected issue connecting to signal-api: {e}")
+                logger.error(f"Unexpected issue connecting to signal-api: {e}")
                 return False
 
             devices: list[str] = response.json()
@@ -60,18 +66,18 @@ class SignalBot:
             setup_done = self.sender in devices
 
             if not setup_done and not link_printed:
-                print(f'The configured sender "{self.sender}" is not yet setup.')
+                logger.info(f'The configured sender "{self.sender}" is not yet setup.')
 
                 if len(devices) > 0:
-                    print(f"Connected number are: {",".join(devices)}")
+                    logger.info(f"Connected number are: {",".join(devices)}")
 
                 response = requests.get(
                     f"{self.api}/v1/qrcodelink?device_name={self.device_name}"
                 )
 
                 if response.status_code != 200:
-                    print(
-                        "ERROR: failed generate tge QR code. Is the signal-api server running?"
+                    logger.error(
+                        "Failed generate tge QR code. Is the signal-api server running?"
                     )
                     return False
 
@@ -81,7 +87,7 @@ class SignalBot:
                 with open(qr_code_file, "wb") as f:
                     f.write(response.content)
 
-                print(f"Scan the QR code to continue: {qr_code_file.absolute()}")
+                logger.info(f"Scan the QR code to continue: {qr_code_file.absolute()}")
 
                 link_printed = True
 
@@ -89,8 +95,8 @@ class SignalBot:
             # failed to initialize
             return False
 
-        print(f"SignalBot: sender: {self.sender}")
-        print(f'SignalBot: recipient(s): {", ".join(self.recipients)}')
+        logger.info(f"Sender: {self.sender}")
+        logger.info(f'Recipient(s): {", ".join(self.recipients)}')
 
         # Send the startup notice only to the sender
         self.send_message(
@@ -106,13 +112,13 @@ class SignalBot:
             "number": self.sender,
             "message": message,
         }
-        print(f"SignalBot: sending message: {json}")
+        logger.info(f"Sending message: {json}")
 
         response = requests.post(f"{self.api}/v2/send", json=json)
 
         if response.status_code == 201:
-            print(f"SignalBot: successfully sent message")
+            logger.info(f"SignalBot: successfully sent message")
         else:
-            print(
-                f'SignalBot: failed to send message! Response: <Code: "{response.status_code}, text: {response.text}">'
+            logger.error(
+                f'Failed to send message! Response: <Code: "{response.status_code}, text: {response.text}">'
             )
