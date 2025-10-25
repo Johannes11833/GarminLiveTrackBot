@@ -1,7 +1,9 @@
 import datetime
 import email
 import re
+from time import sleep
 from typing import Callable
+from imaplib import IMAP4
 from imapclient import IMAPClient
 import imapclient as imapclient
 
@@ -66,15 +68,24 @@ class GarminLinkListener:
         today = datetime.date.today().strftime("%d-%b-%Y")
 
         # search for garmin livetrack emails from today
-        messages = server.search(
-            [
-                "UNSEEN",
-                "SINCE",
-                today,
-                "FROM",
-                "noreply@garmin.com",
-            ]
-        )
+        try:
+            messages = server.search(
+                [
+                    "UNSEEN",
+                    "SINCE",
+                    today,
+                    "FROM",
+                    "noreply@garmin.com",
+                ]
+            )
+        except (IMAP4.abort, IMAP4.error):
+            delay_s = 60
+            print(
+                f"MailListener: failed to search for garmin messages. Retry in {delay_s}s."
+            )
+            sleep(delay_s)
+            return self.__process_unseen_messages(server=server)
+
         for uid, message_data in reversed(server.fetch(messages, "RFC822").items()):
             msg = email.message_from_bytes(message_data[b"RFC822"])
             print(uid, msg.get("From"), msg.get("Subject"))
