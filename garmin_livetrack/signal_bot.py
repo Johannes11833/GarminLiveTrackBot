@@ -4,13 +4,15 @@ import requests
 
 
 class SignalBot:
-    def __init__(self, api: str, sender: str, recipients: list[str]):
+    def __init__(self, api: str, sender: str, recipients: list[str], device_name: str):
         self.api = api
         self.sender = sender
         self.recipients = recipients
+        self.device_name = device_name
 
     def ping(self) -> bool:
-        for _ in range(10):
+        print("Pinging the signal-api")
+        for _ in range(20):
             try:
                 response = requests.get(f"{self.api}/v1/about", timeout=2)
                 if response.status_code == 200:
@@ -18,7 +20,7 @@ class SignalBot:
             except requests.exceptions.ConnectionError:
                 pass
 
-            sleep(0.5)
+            sleep(1)
 
         print(
             f"ERROR: failed to connect to signal-api on: {self.api}. Is the signal-api server running?"
@@ -64,7 +66,7 @@ class SignalBot:
                     print(f"Connected number are: {",".join(devices)}")
 
                 response = requests.get(
-                    f"{self.api}/v1/qrcodelink?device_name=GarminLivetrackBot"
+                    f"{self.api}/v1/qrcodelink?device_name={self.device_name}"
                 )
 
                 if response.status_code != 200:
@@ -92,24 +94,24 @@ class SignalBot:
 
         # Send the startup notice only to the sender
         self.send_message(
-            f"GarminLiveTrackBot started 🤖\n\nThe following {len(self.recipients)} recipient(s) are configured: {', '.join(self.recipients)}",
+            f"{self.device_name} started 🤖\n\nThe following {len(self.recipients)} recipient(s) are configured: {', '.join(self.recipients)}",
             recipients=[self.sender],
         )
 
         return True
 
     def send_message(self, message: str, recipients: list[str] | None = None):
-        response = requests.post(
-            f"{self.api}/v2/send",
-            json={
-                "recipients": recipients if recipients else self.recipients,
-                "number": self.sender,
-                "message": message,
-            },
-        )
+        json = {
+            "recipients": recipients if recipients else self.recipients,
+            "number": self.sender,
+            "message": message,
+        }
+        print(f"SignalBot: sending message: {json}")
+
+        response = requests.post(f"{self.api}/v2/send", json=json)
 
         if response.status_code == 201:
-            print(f'SignalBot: successfully sent message: "{message}"')
+            print(f"SignalBot: successfully sent message")
         else:
             print(
                 f'SignalBot: failed to send message! Response: <Code: "{response.status_code}, text: {response.text}">'

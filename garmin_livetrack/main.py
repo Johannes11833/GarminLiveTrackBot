@@ -9,7 +9,7 @@ bot: SignalBot = None
 
 
 def send_link(link: str):
-    bot.send_message(f"Schau dir meine Fahrradfahrt live an🚲: {link}")
+    bot.send_message(f"🚲 Schau dir meine Fahrradfahrt an: {link}")
 
 
 def cli():
@@ -25,10 +25,15 @@ def cli():
     SIGNAL_API = os.getenv("LIVETRACK_SIGNAL_API")
     SENDER = os.getenv("LIVETRACK_SENDER_PHONE_NUMBER")
     RECIPIENTS = os.getenv("LIVETRACK_RECIPIENT_PHONE_NUMBERS").split(",")
+    DEVICE_NAME = os.getenv(
+        "LIVETRACK_SIGNAL_DEVICE_NAME", default="GarminLivetrackBot"
+    )
 
     # Setup the bot
     global bot
-    bot = SignalBot(api=SIGNAL_API, sender=SENDER, recipients=RECIPIENTS)
+    bot = SignalBot(
+        api=SIGNAL_API, sender=SENDER, recipients=RECIPIENTS, device_name=DEVICE_NAME
+    )
     if not bot.start():
         return
 
