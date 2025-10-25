@@ -7,11 +7,15 @@ import imapclient as imapclient
 
 
 class GarminLinkListener:
+
     def __init__(
         self,
         host: str,
         username: str,
         password: str,
+        # 10 minute default timeout as mentioned here:
+        # https://imapclient.readthedocs.io/en/3.0.0/advanced.html#watching-a-mailbox-using-idle
+        idle_timeout_s: int = 60 * 10,
         callback: Callable[[str], None] | None = None,
     ):
         """
@@ -20,9 +24,10 @@ class GarminLinkListener:
         self.host = host
         self.username = username
         self.password = password
+        self.idle_timeout_s = idle_timeout_s
         self.callback = callback
 
-    def extract_garmin_link(self, msg) -> str | None:
+    def __extract_garmin_link(self, msg) -> str | None:
         """
         Extracts a Garmin LiveTrack link from an HTML email.
         Returns the link as a string or None if not found.
@@ -57,7 +62,7 @@ class GarminLinkListener:
 
         return None
 
-    def process_unseen_messages(self, server: IMAPClient):
+    def __process_unseen_messages(self, server: IMAPClient):
         today = datetime.date.today().strftime("%d-%b-%Y")
 
         # search for garmin livetrack emails from today
@@ -66,43 +71,48 @@ class GarminLinkListener:
                 "UNSEEN",
                 "SINCE",
                 today,
-                #   "FROM", "noreply@garmin.com"
+                "FROM",
+                "noreply@garmin.com",
             ]
         )
         for uid, message_data in reversed(server.fetch(messages, "RFC822").items()):
             msg = email.message_from_bytes(message_data[b"RFC822"])
             print(uid, msg.get("From"), msg.get("Subject"))
-            link = self.extract_garmin_link(msg)
+            link = self.__extract_garmin_link(msg)
 
-            # Add the \Seen flag
+            # Add the \Seen flag so we won't accidentally process this message again
             server.add_flags(uid, [imapclient.SEEN])
 
             if link:
                 if self.callback:
                     self.callback(link)
-                return  # latest link found!
+                break  # latest link found!
 
     def start(self):
         with IMAPClient(host=self.host) as server:
             server.login(self.username, self.password)
             print(f"Successfully logged in to: {self.username}")
             server.select_folder("INBOX", readonly=False)
+            server.idle()
 
             # Start IDLE mode
-            server.idle()
-            print("Listening for new garmin emails")
+            print(
+                f"Listening for new garmin emails using idle timeout: {self.idle_timeout_s}s"
+            )
 
             while True:
+                # check if a new livetrack email has been received
+                server.idle_done()
+                self.__process_unseen_messages(server)
+                server.idle()
+
                 # Wait for an IDLE response
-                responses = server.idle_check(timeout=60)
+                responses = server.idle_check(timeout=self.idle_timeout_s)
                 print("Server sent:", responses if responses else "nothing")
 
                 if responses:
                     for _, status in responses:
                         if status == b"EXISTS":
-                            server.idle_done()
-                            self.process_unseen_messages(server)
-                            server.idle()
                             continue
 
         print("\nIDLE mode done")

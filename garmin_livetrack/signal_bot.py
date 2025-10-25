@@ -10,12 +10,19 @@ class SignalBot:
         self.recipients = recipients
 
     def ping(self) -> bool:
-        for i in range(10):
-            response = requests.get(f"{self.api}/v1/about")
-            if response.status_code == 200:
-                return True
+        for _ in range(10):
+            try:
+                response = requests.get(f"{self.api}/v1/about")
+                if response.status_code == 200:
+                    return True
+            except requests.exceptions.ConnectionError:
+                pass
+
             sleep(0.5)
 
+        print(
+            f"ERROR: failed to connect to signal-api on: {self.api}. Is the signal-api server running?"
+        )
         return False
 
     def start(self) -> bool:
@@ -67,6 +74,7 @@ class SignalBot:
                     return False
 
                 qr_code_file = Path("garmin-livetrack-data/signal_qr_code.png")
+                qr_code_file.parent.mkdir(parents=True, exist_ok=True)
 
                 with open(qr_code_file, "wb") as f:
                     f.write(response.content)

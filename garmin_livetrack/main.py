@@ -8,17 +8,20 @@ from garmin_livetrack.signal_bot import SignalBot
 bot: SignalBot = None
 
 
-def send_message(link: str):
+def send_link(link: str):
     bot.send_message(f"Schau dir meine Fahrradfahrt live an🚲: {link}")
 
 
 def cli():
-    # Load environment variables
+    # Load environment variables from .env file
     load_dotenv()
+
+    # email secrets
     HOST = os.getenv("LIVETRACK_EMAIL_HOST")
     USERNAME = os.getenv("LIVETRACK_EMAIL_USERNAME")
     PASSWORD = os.getenv("LIVETRACK_EMAIL_PASSWORD")
 
+    # signal secrets
     SIGNAL_API = os.getenv("LIVETRACK_SIGNAL_API")
     SENDER = os.getenv("LIVETRACK_SENDER_PHONE_NUMBER")
     RECIPIENTS = os.getenv("LIVETRACK_RECIPIENT_PHONE_NUMBERS").split(",")
@@ -31,7 +34,7 @@ def cli():
 
     # Setup the garmin livetrack email listener
     listener = GarminLinkListener(
-        host=HOST, username=USERNAME, password=PASSWORD, callback=send_message
+        host=HOST, username=USERNAME, password=PASSWORD, callback=send_link
     )
     listener.start()
 
