@@ -24,6 +24,7 @@ class GarminLinkListener:
         # https://imapclient.readthedocs.io/en/3.0.0/advanced.html#watching-a-mailbox-using-idle
         idle_timeout_s: int = 5 * 60,
         resync_interval_s: int = 15 * 60,
+        error_retry_s: int = 90,
         callback: Callable[[str], None] | None = None,
     ):
         """
@@ -34,6 +35,7 @@ class GarminLinkListener:
         self.password = password
         self.idle_timeout_s = idle_timeout_s
         self.resync_interval_s = resync_interval_s
+        self.error_retry_s = error_retry_s
         self.callback = callback
 
     def __extract_garmin_link(self, msg) -> str | None:
@@ -85,12 +87,11 @@ class GarminLinkListener:
                     "noreply@garmin.com",
                 ]
             )
-        except (IMAP4.abort, IMAP4.error, TimeoutError):
+        except Exception as e:
             # wait, then retry to fetch new garmin messages
-            delay_s = 60 * 5
-            logger.warning(
-                f"Failed to search for garmin messages. Retry in {delay_s}s."
-            )
+            delay_s = self.error_retry_s
+            logger.warning(f"Failed to search for garmin messages: {e}")
+            logger.info(f"Retry in {delay_s}s.")
             time.sleep(delay_s)
             return self.__process_unseen_messages(server=server)
 
@@ -122,15 +123,25 @@ class GarminLinkListener:
             )
 
             while True:
-
-                # Wait for an IDLE response
-                server.idle()
-                responses = server.idle_check(timeout=self.idle_timeout_s)
-                logger.info(f'Server sent: {responses if responses else "nothing"}')
-                server.idle_done()
-
                 should_check = False
-                if self.__check_responses(responses=responses):
+
+                try:
+                    # Wait for an IDLE response
+                    server.idle()
+                    responses = server.idle_check(timeout=self.idle_timeout_s)
+                    logger.info(f'Server sent: {responses if responses else "nothing"}')
+                    server.idle_done()
+
+                    if self.__check_responses(responses=responses):
+                        should_check = True
+                except Exception as e:
+                    # an error occurred
+                    logger.warning(f"An error occurred during idling: {e}")
+                    logger.info(
+                        f"Waiting {self.error_retry_s}s before manually checking for new messages."
+                    )
+                    # wait a bit, then check emails
+                    time.sleep(self.error_retry_s)
                     should_check = True
 
                 # Periodic NOOP (to check connection and sync)
