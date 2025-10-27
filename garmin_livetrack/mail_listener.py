@@ -3,7 +3,6 @@ import email
 import re
 import time
 from typing import Callable
-from imaplib import IMAP4
 from imapclient import IMAPClient
 import imapclient as imapclient
 
@@ -20,11 +19,11 @@ class GarminLinkListener:
         host: str,
         username: str,
         password: str,
-        # 5 minute default timeout as mentioned here:
+        # 10 minute default timeout as mentioned here:
         # https://imapclient.readthedocs.io/en/3.0.0/advanced.html#watching-a-mailbox-using-idle
-        idle_timeout_s: int = 5 * 60,
-        resync_interval_s: int = 15 * 60,
-        error_retry_s: int = 7 * 60,
+        idle_timeout_s: int = 10 * 60,
+        resync_interval_s: int = 20 * 60,
+        error_retry_s: int = 5 * 60,
         callback: Callable[[str], None] | None = None,
     ):
         """
@@ -76,6 +75,7 @@ class GarminLinkListener:
         return None
 
     def __process_unseen_messages(self):
+        logger.info("Searching for new Gamin messages.")
         today = datetime.date.today().strftime("%d-%b-%Y")
 
         # search for garmin livetrack emails from today
@@ -166,11 +166,16 @@ class GarminLinkListener:
             if (not should_check) and (
                 time.time() - last_sync >= self.resync_interval_s
             ):
-                logger.info("Performing periodic NOOP to stay synced...")
-                _, responses = self.client.noop()
-                last_sync = time.time()
+                logger.info("Performing periodic NOOP to stay logged in.")
 
-                if self.__check_responses(responses=responses):
+                try:
+                    _, responses = self.client.noop()
+                    last_sync = time.time()
+
+                    if self.__check_responses(responses=responses):
+                        should_check = True
+                except Exception:
+                    self.connect()
                     should_check = True
 
             if should_check:

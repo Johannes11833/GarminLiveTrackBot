@@ -95,7 +95,7 @@ class SignalBot:
             # failed to initialize
             return False
 
-        logger.info(f"Sender: {self.sender}")
+        logger.info(f"Logged in to signal as: {self.sender}")
         logger.info(f'Recipient(s): {", ".join(self.recipients)}')
 
         # Send the startup notice only to the sender

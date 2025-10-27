@@ -8,7 +8,7 @@ def configure_logs():
         level="INFO",
         format=FORMAT,
         datefmt="[%X]",
-        handlers=[RichHandler(rich_tracebacks=True, show_time=False)],
+        handlers=[RichHandler(rich_tracebacks=True, show_time=False, show_path=False)],
     )
 
 
