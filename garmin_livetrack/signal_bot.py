@@ -116,17 +116,27 @@ class SignalBot:
         logger.info(f"Sending message: {json}")
         response = None
 
-        try:
-            response = requests.post(f"{self.api}/v2/send", json=json, timeout=10)
-            could_send = True
-        except:
-            could_send = False
+        could_send = False
+        for _ in range(10):
+            try:
+                response = requests.post(f"{self.api}/v2/send", json=json, timeout=30)
 
-        if could_send and response.status_code == 201:
-            logger.info(f"SignalBot: successfully sent message")
-        else:
-            logger.error(
-                f'Failed to send message! Response: <Code: "{response.status_code}, text: {response.text}">'
-            )
+                if response.status_code == 201:
+                    could_send = True
+                    break
+                else:
+                    logger.warning(
+                        f"Failed to send message. Status Code: {response.status_code}, message: {response.text}"
+                    )
+            except:
+                logger.warning(
+                    f"Timeout occurred while trying to send the message."
+                )
+
+            # retry to send after a delay
             time.sleep(5)
-            self.send_message(message=message, recipients=recipients)
+
+        if could_send:
+            logger.info("SignalBot: successfully sent message")
+        else:
+            logger.error("Failed to send message!")
