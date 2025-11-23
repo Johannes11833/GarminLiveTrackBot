@@ -1,5 +1,6 @@
 from pathlib import Path
 from time import sleep
+import time
 import requests
 
 from garmin_livetrack.logger import get_logger
@@ -114,11 +115,17 @@ class SignalBot:
         }
         logger.info(f"Sending message: {json}")
 
-        response = requests.post(f"{self.api}/v2/send", json=json)
+        try:
+            response = requests.post(f"{self.api}/v2/send", json=json, timeout=10)
+            could_send = True
+        except:
+            could_send = False
 
-        if response.status_code == 201:
+        if could_send and response.status_code == 201:
             logger.info(f"SignalBot: successfully sent message")
         else:
             logger.error(
                 f'Failed to send message! Response: <Code: "{response.status_code}, text: {response.text}">'
             )
+            time.sleep(5)
+            self.send_message(message=message, recipients=recipients)
