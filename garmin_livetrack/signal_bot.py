@@ -120,7 +120,7 @@ class SignalBot:
         could_send = False
         for _ in range(10):
             try:
-                response = requests.post(f"{self.api}/v2/send", json=json, timeout=60)
+                response = requests.post(f"{self.api}/v2/send", json=json, timeout=180)
 
                 if response.status_code == 201:
                     could_send = True
