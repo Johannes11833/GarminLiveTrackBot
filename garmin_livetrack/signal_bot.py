@@ -114,6 +114,7 @@ class SignalBot:
             "message": message,
         }
         logger.info(f"Sending message: {json}")
+        response = None
 
         try:
             response = requests.post(f"{self.api}/v2/send", json=json, timeout=10)
