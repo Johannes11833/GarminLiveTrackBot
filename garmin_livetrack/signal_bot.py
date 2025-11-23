@@ -43,7 +43,7 @@ class SignalBot:
 
         while not setup_done:
             try:
-                response = requests.get(f"{self.api}/v1/accounts")
+                response = requests.get(f"{self.api}/v1/accounts", timeout=10)
 
                 if response.status_code != 200:
                     logger.error(
@@ -70,10 +70,11 @@ class SignalBot:
                 logger.info(f'The configured sender "{self.sender}" is not yet setup.')
 
                 if len(devices) > 0:
-                    logger.info(f"Connected number are: {",".join(devices)}")
+                    logger.info(f"Connected numbers are: {",".join(devices)}")
 
                 response = requests.get(
-                    f"{self.api}/v1/qrcodelink?device_name={self.device_name}"
+                    f"{self.api}/v1/qrcodelink?device_name={self.device_name}",
+                    timeout=20,
                 )
 
                 if response.status_code != 200:
@@ -129,9 +130,7 @@ class SignalBot:
                         f"Failed to send message. Status Code: {response.status_code}, message: {response.text}"
                     )
             except:
-                logger.warning(
-                    f"Timeout occurred while trying to send the message."
-                )
+                logger.warning(f"Timeout occurred while trying to send the message.")
 
             # retry to send after a delay
             time.sleep(5)
