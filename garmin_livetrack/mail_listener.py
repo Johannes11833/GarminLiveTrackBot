@@ -74,9 +74,10 @@ class GarminLinkListener:
 
         return None
 
-    def __process_unseen_messages(self):
+    def __process_unseen_garmin_messages(self) -> bool:
         logger.info("Searching for new Gamin messages.")
         today = datetime.date.today().strftime("%d-%b-%Y")
+        response = dict()
 
         # search for garmin livetrack emails from today
         try:
@@ -89,31 +90,40 @@ class GarminLinkListener:
                     "noreply@garmin.com",
                 ]
             )
-        except Exception as e:
-            # wait, then re-login & retry to fetch new garmin messages
-            delay_s = self.error_retry_s
-            logger.warning(f"Failed to search for garmin messages: {e}")
-            logger.info(f"Retry in {delay_s}s.")
-            time.sleep(delay_s)
-            self.connect()
-            return self.__process_unseen_messages()
+            if messages:
+                response = self.client.fetch(messages, "RFC822")
+            else:
+                # no messages to fetch
+                logger.info("No new Garmin messages found.")
+                return False
 
-        for uid, message_data in reversed(
-            self.client.fetch(messages, "RFC822").items()
-        ):
+        except Exception as e:
+            # wait, then re-login
+            logger.warning(f"Failed to search for garmin messages: {e}")
+            self.connect()
+            return False
+
+        # iterate over the found emails, latest first
+        for uid, message_data in reversed(response.items()):
             msg = email.message_from_bytes(message_data[b"RFC822"])
             logger.info(
                 f"Found email from {msg.get("From")} with subject {msg.get("Subject")}"
             )
             link = self.__extract_garmin_link(msg)
 
-            # Add the \Seen flag so we won't accidentally process this message again
-            self.client.add_flags(uid, [imapclient.SEEN])
+            try:
+                # Add the \Seen flag so we won't accidentally process this message again
+                self.client.add_flags(uid, [imapclient.SEEN])
+            except:
+                logger.warning("Failed to mark Garmin email as seen!")
 
             if link:
                 if self.callback:
                     self.callback(link)
-                break  # latest link found!
+                return True  # latest link found!
+
+        logger.info("No new Garmin email found")
+        return False
 
     def connect(self):
         if self.client:
@@ -179,8 +189,18 @@ class GarminLinkListener:
                     should_check = True
 
             if should_check:
+                # wait a little so the email can be fetched
+                time.sleep(10)
+
                 # check if a new livetrack email has been received
-                self.__process_unseen_messages()
+                for _ in range(0, 10):
+                    if self.__process_unseen_garmin_messages():
+                        break
+                    else:
+                        # retry in case the email cannot be fetched right away
+                        delay_s = 15
+                        logger.info(f"Waiting {delay_s}s before searching again.")
+                        time.sleep(delay_s)
 
     def __check_responses(self, responses) -> bool:
         if responses:
