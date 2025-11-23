@@ -43,7 +43,7 @@ class SignalBot:
 
         while not setup_done:
             try:
-                response = requests.get(f"{self.api}/v1/accounts", timeout=10)
+                response = requests.get(f"{self.api}/v1/accounts", timeout=30)
 
                 if response.status_code != 200:
                     logger.error(
