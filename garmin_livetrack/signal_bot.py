@@ -1,7 +1,9 @@
 from pathlib import Path
 from time import sleep
 import time
+import qrcode
 import requests
+
 
 from garmin_livetrack.logger import get_logger
 
@@ -73,23 +75,35 @@ class SignalBot:
                     logger.info(f"Connected numbers are: {",".join(devices)}")
 
                 response = requests.get(
-                    f"{self.api}/v1/qrcodelink?device_name={self.device_name}",
+                    f"{self.api}/v1/qrcodelink/raw?device_name={self.device_name}",
                     timeout=20,
                 )
 
                 if response.status_code != 200:
                     logger.error(
-                        "Failed generate tge QR code. Is the signal-api server running?"
+                        "Failed to generate the QR code. Is the signal-api server running?"
                     )
                     return False
 
-                qr_code_file = Path("garmin-livetrack-data/signal_qr_code.png")
-                qr_code_file.parent.mkdir(parents=True, exist_ok=True)
+                device_link_uri = response.json()["device_link_uri"]
 
-                with open(qr_code_file, "wb") as f:
-                    f.write(response.content)
+                # Print the QR code to the terminal so it can be scanned directly
+                logger.info("Scan the QR code to continue:")
+                qr = qrcode.QRCode(
+                    border=1,
+                    box_size=1,
+                )
+                qr.add_data(device_link_uri)
+                qr.make(fit=True)
+                qr.print_tty()
 
-                logger.info(f"Scan the QR code to continue: {qr_code_file.absolute()}")
+                # Keep a file-based fallback in case the terminal output can't be
+                # scanned (e.g. remote/headless setup)
+                img = qr.make_image(fill_color="black", back_color="white")
+                qr_file = Path("garmin-livetrack-data/qrcode.png")
+                qr_file.parent.mkdir(parents=True, exist_ok=True)
+                img.save(qr_file.as_posix())
+                logger.info(f"QR code link saved to: {qr_file.absolute()}")
 
                 link_printed = True
 
