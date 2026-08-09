@@ -95,7 +95,10 @@ class SignalBot:
                 )
                 qr.add_data(device_link_uri)
                 qr.make(fit=True)
-                qr.print_tty()
+                try:
+                    qr.print_tty()
+                except OSError:
+                    logger.info("Failed to print QR code in terminal (not a TTY).")
 
                 # Keep a file-based fallback in case the terminal output can't be
                 # scanned (e.g. remote/headless setup)
@@ -103,7 +106,7 @@ class SignalBot:
                 qr_file = Path("garmin-livetrack-data/qrcode.png")
                 qr_file.parent.mkdir(parents=True, exist_ok=True)
                 img.save(qr_file.as_posix())
-                logger.info(f"QR code link saved to: {qr_file.absolute()}")
+                logger.info(f"QR code saved to: {qr_file.absolute()}")
 
                 link_printed = True
 
