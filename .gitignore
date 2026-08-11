@@ -3,3 +3,4 @@
 __pycache__
 signal-api-data/
 garmin-livetrack-data/
+garmin_livetrack/*.json

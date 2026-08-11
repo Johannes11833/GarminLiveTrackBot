@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>LiveTrack Viewer</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<style>
+  :root {
+    --ink: #1b2430;
+    --paper: #f7f5f0;
+    --line: #2f6f6a;
+    --accent: #d9622b;
+    --muted: #6b7280;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    padding: 14px 20px;
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    border-bottom: 2px solid var(--ink);
+    background: var(--paper);
+    z-index: 500;
+  }
+  h1 {
+    font-size: 16px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin: 0;
+    font-weight: 700;
+  }
+  #status {
+    font-size: 13px;
+    color: var(--muted);
+  }
+  #status.live { color: var(--line); font-weight: 600; }
+  #status.expired { color: var(--accent); font-weight: 600; }
+  #map { flex: 1; }
+  .stat-bar {
+    display: flex;
+    gap: 24px;
+    padding: 10px 20px;
+    background: #fff;
+    border-top: 1px solid #e2e0d8;
+    font-size: 13px;
+  }
+  .stat-bar div span.label {
+    color: var(--muted);
+    margin-right: 6px;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+  }
+  .stat-bar div span.value {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .leaflet-popup-content { font-size: 13px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>LiveTrack</h1>
+  <span id="status">connecting…</span>
+</header>
+
+<div id="map"></div>
+
+<div class="stat-bar">
+  <div><span class="label">Points</span><span class="value" id="stat-points">–</span></div>
+  <div><span class="label">Distance</span><span class="value" id="stat-distance">–</span></div>
+  <div><span class="label">Speed</span><span class="value" id="stat-speed">–</span></div>
+  <div><span class="label">Last update</span><span class="value" id="stat-updated">–</span></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const POLL_MS = 5000;
+const TRACK_URL = "track.json";       // written continuously by garmin_livetrack.py
+const SESSION_URL = "session.json";   // session metadata (status etc.)
+const COURSE_URL = "course.json";     // planned route ("loaded track"); may not exist
+
+const map = L.map('map', { zoomControl: true });
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+  attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
+
+const line = L.polyline([], { color: '#2f6f6a', weight: 4, opacity: 0.85 }).addTo(map);
+const courseLine = L.polyline([], { color: '#d9622b', weight: 3, dashArray: '8 10', opacity: 0.7 }).addTo(map);
+const startIcon = L.divIcon({ className: '', html: '<div style="width:10px;height:10px;border-radius:50%;background:#6b7280;border:2px solid white;"></div>' });
+const liveIcon = L.divIcon({ className: '', html: '<div style="width:16px;height:16px;border-radius:50%;background:#d9622b;border:3px solid white;box-shadow:0 0 0 4px rgba(217,98,43,0.25);"></div>' });
+
+let startMarker = null;
+let liveMarker = null;
+let fitted = false;
+
+function fmt(n, d = 1) {
+  return (typeof n === 'number') ? n.toFixed(d) : '–';
+}
+
+async function refresh() {
+  try {
+    const [trackResp, sessionResp, courseResp] = await Promise.all([
+      fetch(TRACK_URL + '?_=' + Date.now()),
+      fetch(SESSION_URL + '?_=' + Date.now()).catch(() => null),
+      fetch(COURSE_URL + '?_=' + Date.now()).catch(() => null)
+    ]);
+
+    if (!trackResp.ok) throw new Error('track fetch failed');
+    const points = await trackResp.json();
+
+    if (sessionResp && sessionResp.ok) {
+      const info = await sessionResp.json();
+      const statusEl = document.getElementById('status');
+      const isLive = info.sessionStatus === 'InProgress';
+      statusEl.textContent = `${info.sessionName || 'session'} — ${info.userDisplayName || ''} — ${info.sessionStatus || 'unknown'}`;
+      statusEl.className = isLive ? 'live' : 'expired';
+    }
+
+    // Planned route ("loaded track") drawn as a dashed line. Some sessions
+    // have none, and the file simply won't exist yet -- clear it in that case.
+    let courseBounds = null;
+    if (courseResp && courseResp.ok) {
+      const course = await courseResp.json();
+      const cpts = (course.points || [])
+        .map(p => [p.latitude, p.longitude])
+        .filter(c => c[0] != null && c[1] != null);
+      courseLine.setLatLngs(cpts);
+      if (cpts.length) courseBounds = courseLine.getBounds();
+    } else {
+      courseLine.setLatLngs([]);
+    }
+
+    if (points.length > 0) {
+      const latlngs = points.map(p => [p.latitude, p.longitude]);
+      line.setLatLngs(latlngs);
+
+      if (!startMarker) {
+        startMarker = L.marker(latlngs[0], { icon: startIcon }).addTo(map).bindPopup('Start');
+      }
+
+      const last = points[points.length - 1];
+      const lastLatLng = [last.latitude, last.longitude];
+      if (!liveMarker) {
+        liveMarker = L.marker(lastLatLng, { icon: liveIcon }).addTo(map);
+      } else {
+        liveMarker.setLatLng(lastLatLng);
+      }
+      liveMarker.bindPopup(
+        `<b>Live position</b><br>${last.latitude.toFixed(5)}, ${last.longitude.toFixed(5)}`
+      );
+
+      if (!fitted) {
+        const bounds = courseBounds ? line.getBounds().extend(courseBounds) : line.getBounds();
+        map.fitBounds(bounds, { padding: [40, 40] });
+        fitted = true;
+      } else {
+        map.panTo(lastLatLng, { animate: true });
+      }
+
+      const meta = last.metaData || {};
+      document.getElementById('stat-points').textContent = points.length;
+      document.getElementById('stat-distance').textContent =
+        meta.TOTAL_DISTANCE ? `${(parseFloat(meta.TOTAL_DISTANCE) / 1000).toFixed(2)} km` : '–';
+      document.getElementById('stat-speed').textContent =
+        meta.SPEED ? `${(parseFloat(meta.SPEED) * 3.6).toFixed(1)} km/h` : '–';
+      document.getElementById('stat-updated').textContent =
+        new Date(last.timestamp).toLocaleTimeString();
+    } else if (courseBounds && !fitted) {
+      // No live points yet, but a planned route exists -- frame it instead
+      // of leaving the map at the default world view.
+      map.fitBounds(courseBounds, { padding: [40, 40] });
+      fitted = true;
+    }
+  } catch (err) {
+    document.getElementById('status').textContent = 'waiting for data…';
+    console.error(err);
+  }
+}
+
+map.setView([0, 0], 2);
+refresh();
+setInterval(refresh, POLL_MS);
+</script>
+</body>
+</html>
