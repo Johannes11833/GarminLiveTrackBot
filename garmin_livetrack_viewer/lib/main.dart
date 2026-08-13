@@ -12,11 +12,45 @@ const apiBaseUrl = 'http://127.0.0.1:8000';
 
 // Configurable colors: position (live dot), track (route), course (planned).
 const positionColor = Colors.deepPurple;
+const buttonColor = Colors.deepPurple;
 const trackColor = Colors.teal;
 const courseColor = Colors.pink;
 
+// Bright icons on dark button colors, dark icons on light button colors.
+final buttonIconColor = buttonColor.computeLuminance() < 0.5
+    ? Colors.white
+    : Colors.black87;
+
 // Vector basemap: OpenFreeMap (free, no key).
 const vectorStyleUrl = 'https://tiles.openfreemap.org/styles/liberty';
+
+String _twoDigits(int n) => n.toString().padLeft(2, '0');
+
+String _formatTime(DateTime t) =>
+    '${_twoDigits(t.hour)}:${_twoDigits(t.minute)}:${_twoDigits(t.second)}';
+
+String _formatDuration(Object? value) {
+  if (value is! num) return '';
+  final total = value.toInt();
+  return '${total ~/ 3600}:${_twoDigits((total % 3600) ~/ 60)}:'
+      '${_twoDigits(total % 60)}';
+}
+
+String _formatDistance(Object? value) {
+  if (value is! num) return '';
+  if (value >= 1000) return '${(value / 1000).toStringAsFixed(2)} km';
+  return '${value.toStringAsFixed(0)} m';
+}
+
+String _formatSpeed(Object? value) {
+  if (value is! num) return '';
+  return '${(value * 3.6).toStringAsFixed(1)} km/h';
+}
+
+String _formatElevation(Object? value) {
+  if (value is! num) return '';
+  return '${value.toStringAsFixed(0)} m';
+}
 
 void main() => runApp(const LiveTrackApp());
 
@@ -48,22 +82,25 @@ class _LiveTrackPageState extends State<LiveTrackPage>
     duration: const Duration(milliseconds: 600),
   );
   Timer? _timer;
-  List<Map<String, dynamic>> _trackings = [];
   List<LatLng> _track = [];
   List<LatLng> _course = [];
-  String? _selectedId;
-  String _status = 'Loading trackings...';
   bool _mapReady = false;
   bool _userInteracted = false;
   bool _hasPositionedMap = false;
   bool _refreshing = false;
   String _lastFingerprint = '';
+  String _lastToast = '';
+  Map<String, dynamic>? _session;
+  Map<String, dynamic>? _metaData;
+  DateTime? _lastUpdate;
   vt.Style? _vectorStyle;
 
   @override
   void initState() {
     super.initState();
-    _refresh();
+    // Defer until after the first frame so ScaffoldMessenger is available
+    // for toasts (e.g. when no ?id= is provided).
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
     _loadVectorStyle();
     _timer = Timer.periodic(const Duration(seconds: 5), (_) => _refresh());
   }
@@ -107,65 +144,112 @@ class _LiveTrackPageState extends State<LiveTrackPage>
       )
       .toList();
 
+  String? _resolveSessionId() {
+    final idParam = Uri.base.queryParameters['id'];
+    if (idParam != null && idParam.trim().isNotEmpty) return idParam.trim();
+    return null;
+  }
+
+  Future<Map<String, dynamic>?> _getMap(String path) async {
+    final response = await http.get(Uri.parse('$apiBaseUrl$path'));
+    if (response.statusCode != 200) return null;
+    final body = jsonDecode(response.body);
+    return body is Map<String, dynamic> ? body : null;
+  }
+
+  void _showToast(String message) {
+    if (message == _lastToast) return;
+    _lastToast = message;
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(content: Text(message), duration: const Duration(days: 1)),
+      );
+  }
+
   Future<void> _refresh() async {
     if (_refreshing) return;
     _refreshing = true;
     try {
-      final trackings = (await _getList('/trackings'))
-          .whereType<Map<String, dynamic>>()
-          .toList();
-      if (trackings.isEmpty) {
-        if (mounted && _status != 'No active tracking sessions.') {
-          setState(() {
-            _trackings = [];
-            _selectedId = null;
-            _track = [];
-            _course = [];
-            _status = 'No active tracking sessions.';
-          });
-        }
+      final sessionId = _resolveSessionId();
+      if (sessionId == null) {
+        _showToast('No session. Pass ?id=<session id> to the app URL.');
         return;
       }
-      final ids = trackings.map((tracking) => tracking['id'] as String).toSet();
-      final selectedId = ids.contains(_selectedId) ? _selectedId! : ids.first;
+      final snapshot = await _getMap('/trackings/$sessionId');
+      if (snapshot == null) {
+        _showToast('Tracking $sessionId not found.');
+        return;
+      }
       final data = await Future.wait([
-        _getList('/trackings/$selectedId/track'),
-        _getList('/trackings/$selectedId/course'),
+        _getList('/trackings/$sessionId/track'),
+        _getList('/trackings/$sessionId/course'),
       ]);
       if (!mounted) return;
-      final tracking = trackings.firstWhere((item) => item['id'] == selectedId);
-      final track = _coordinates(data[0]);
+      final trackData = data[0].whereType<Map<String, dynamic>>().toList();
+      final track = _coordinates(trackData);
       final course = _coordinates(data[1]);
-      final status = '${tracking['state']} | ${track.length} track points';
+      final lastMeta = trackData.isNotEmpty ? trackData.last['metaData'] : null;
       final fingerprint =
-          '$selectedId|${track.length}|${course.length}|'
+          '$sessionId|${track.length}|${course.length}|'
           '${track.isEmpty ? '' : track.last}|'
-          '${course.isEmpty ? '' : course.first}|$status';
+          '${course.isEmpty ? '' : course.first}|$lastMeta';
       if (fingerprint == _lastFingerprint) {
         // Retry a pending auto-center even when nothing changed.
         _centerMapOnce(track, course);
         return;
       }
       _lastFingerprint = fingerprint;
+      _lastToast = '';
+      final lastTs = trackData.isNotEmpty ? trackData.last['timestamp'] : null;
+      final lastUpdate = lastTs is num
+          ? DateTime.fromMillisecondsSinceEpoch(
+              // Garmin timestamps can be in seconds or milliseconds.
+              lastTs >= 1000000000000 ? lastTs.toInt() : lastTs.toInt() * 1000,
+            )
+          : null;
       setState(() {
-        _trackings = trackings;
-        // Don't revert a session the user selected mid-poll.
-        if (_selectedId == null || _selectedId == selectedId) {
-          _selectedId = selectedId;
-        }
         _track = track;
         _course = course;
-        _status = status;
+        _session = snapshot['session'] is Map<String, dynamic>
+            ? snapshot['session'] as Map<String, dynamic>
+            : null;
+        _metaData = lastMeta is Map<String, dynamic> ? lastMeta : null;
+        _lastUpdate = lastUpdate;
       });
       _centerMapOnce(track, course);
     } catch (error, stackTrace) {
       log("$error");
       log("$stackTrace");
-      if (mounted) setState(() => _status = 'Cannot reach API: $error');
+      _showToast('Cannot reach API: $error');
     } finally {
       _refreshing = false;
     }
   }
+
+  List<(String, String)> _metaDataRows(Map<String, dynamic> meta) {
+    final rows = <(String, String)>[];
+    void add(String label, Object? value) {
+      if (value == null) return;
+      final text = value.toString().trim();
+      if (text.isNotEmpty && text != 'null') rows.add((label, text));
+    }
+
+    add('Distance', _formatDistance(meta['TOTAL_DISTANCE']));
+    add('Duration', _formatDuration(meta['TOTAL_DURATION']));
+    add('Speed', _formatSpeed(meta['SPEED']));
+    add('Elevation', _formatElevation(meta['ELEVATION']));
+    return rows;
+  }
+
+  Icon _metaIcon(String label) => switch (label) {
+    'Distance' => const Icon(Icons.route, size: 18),
+    'Duration' => const Icon(Icons.timer_outlined, size: 18),
+    'Speed' => const Icon(Icons.speed, size: 18),
+    'Elevation' => const Icon(Icons.terrain, size: 18),
+    _ => const Icon(Icons.info_outline, size: 18),
+  };
 
   void _centerMapOnce(List<LatLng> track, List<LatLng> course) {
     if (_hasPositionedMap || !_mapReady || _userInteracted) return;
@@ -182,25 +266,6 @@ class _LiveTrackPageState extends State<LiveTrackPage>
       } catch (_) {
         // Map may have been disposed; the next poll will retry.
       }
-    });
-  }
-
-  void _selectTracking(String? id) {
-    if (id == null || id == _selectedId) return;
-    setState(() => _selectedId = id);
-    _refresh().then((_) {
-      // Center on the newly selected session unless the user already panned.
-      if (_refreshing || !mounted || !_mapReady || _userInteracted) return;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        final target = _track.isNotEmpty
-            ? _track.last
-            : (_course.isNotEmpty ? _course.first : null);
-        if (target == null) return;
-        try {
-          _mapController.move(target, _centerZoom);
-        } catch (_) {}
-      });
     });
   }
 
@@ -256,133 +321,190 @@ class _LiveTrackPageState extends State<LiveTrackPage>
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: const Text('Garmin LiveTrack'),
-      actions: [
-        IconButton(onPressed: _refresh, icon: const Icon(Icons.refresh)),
-      ],
-    ),
-    body: Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(12),
-          child: Row(
-            children: [
-              Expanded(
-                child: DropdownButtonFormField<String>(
-                  key: ValueKey(_selectedId),
-                  initialValue: _selectedId,
-                  hint: const Text('Select a tracking session'),
-                  items: _trackings
-                      .map(
-                        (tracking) => DropdownMenuItem(
-                          value: tracking['id'] as String,
-                          child: Text(
-                            '${tracking['id']} (${tracking['state']})',
-                          ),
-                        ),
-                      )
-                      .toList(),
-                  onChanged: _selectTracking,
+  Widget build(BuildContext context) {
+    final sessionName = _session?['sessionName']?.toString().trim();
+    return Scaffold(
+      appBar: AppBar(
+        title: Row(
+          children: [
+            const Text('Garmin LiveTrack'),
+            if (sessionName != null && sessionName.isNotEmpty) ...[
+              const Text(' - '),
+              Flexible(
+                child: Text(
+                  sessionName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodyMedium,
                 ),
               ),
-              const SizedBox(width: 16),
-              Text(_status),
             ],
-          ),
+          ],
         ),
-        Expanded(
-          child: Stack(
-            children: [
-              FlutterMap(
-                mapController: _mapController,
-                options: MapOptions(
-                  initialCenter: const LatLng(0, 0),
-                  initialZoom: 2,
-                  onMapReady: () => _mapReady = true,
-                  onMapEvent: (event) {
-                    // Only real gestures count as user interaction; layout and
-                    // programmatic events (nonRotatedSizeChange, mapController)
-                    // fire on startup and must not block auto-centering.
-                    if (event.source != MapEventSource.mapController &&
-                        event.source != MapEventSource.nonRotatedSizeChange) {
-                      _userInteracted = true;
-                    }
-                  },
-                ),
-                children: [
-                  if (_vectorStyle != null)
-                    vt.VectorTileLayer(
-                      theme: _vectorStyle!.theme,
-                      tileProviders: _vectorStyle!.providers,
-                      rasterSources: _vectorStyle!.rasterSources,
-                      sprites: _vectorStyle!.sprites,
-                    ),
-                  PolylineLayer(
-                    polylines: [
-                      if (_course.isNotEmpty)
-                        Polyline(
-                          points: _course,
-                          color: courseColor,
-                          strokeWidth: 4,
-                        ),
-                      if (_track.isNotEmpty)
-                        Polyline(
-                          points: _track,
-                          color: trackColor,
-                          strokeWidth: 4,
-                        ),
-                    ],
+        actions: [
+          IconButton(onPressed: _refresh, icon: const Icon(Icons.refresh)),
+        ],
+      ),
+      body: Column(
+        children: [
+          Expanded(
+            child: Stack(
+              children: [
+                FlutterMap(
+                  mapController: _mapController,
+                  options: MapOptions(
+                    initialCenter: const LatLng(0, 0),
+                    initialZoom: 2,
+                    onMapReady: () => _mapReady = true,
+                    onMapEvent: (event) {
+                      // Only real gestures count as user interaction; layout and
+                      // programmatic events (nonRotatedSizeChange, mapController)
+                      // fire on startup and must not block auto-centering.
+                      if (event.source != MapEventSource.mapController &&
+                          event.source != MapEventSource.nonRotatedSizeChange) {
+                        _userInteracted = true;
+                      }
+                    },
                   ),
-                  if (_track.isNotEmpty)
-                    MarkerLayer(
-                      markers: [
-                        Marker(
-                          point: _track.last,
-                          width: 72,
-                          height: 72,
-                          child: const _PulsingPositionMarker(),
-                        ),
+                  children: [
+                    if (_vectorStyle != null)
+                      vt.VectorTileLayer(
+                        theme: _vectorStyle!.theme,
+                        tileProviders: _vectorStyle!.providers,
+                        rasterSources: _vectorStyle!.rasterSources,
+                        sprites: _vectorStyle!.sprites,
+                      ),
+                    PolylineLayer(
+                      polylines: [
+                        if (_course.isNotEmpty)
+                          Polyline(
+                            points: _course,
+                            color: courseColor,
+                            strokeWidth: 4,
+                          ),
+                        if (_track.isNotEmpty)
+                          Polyline(
+                            points: _track,
+                            color: trackColor,
+                            strokeWidth: 4,
+                          ),
                       ],
                     ),
-                ],
-              ),
-              Positioned(
-                right: 12,
-                bottom: 12,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    FloatingActionButton.small(
-                      heroTag: 'focusPosition',
-                      tooltip: 'Focus current position',
-                      onPressed: _focusPosition,
-                      child: const Icon(Icons.my_location),
-                    ),
-                    const SizedBox(height: 8),
-                    FloatingActionButton.small(
-                      heroTag: 'zoomIn',
-                      tooltip: 'Zoom in',
-                      onPressed: () => _zoomBy(1),
-                      child: const Icon(Icons.add),
-                    ),
-                    const SizedBox(height: 8),
-                    FloatingActionButton.small(
-                      heroTag: 'zoomOut',
-                      tooltip: 'Zoom out',
-                      onPressed: () => _zoomBy(-1),
-                      child: const Icon(Icons.remove),
-                    ),
+                    if (_track.isNotEmpty)
+                      MarkerLayer(
+                        markers: [
+                          Marker(
+                            point: _track.last,
+                            width: 72,
+                            height: 72,
+                            child: const _PulsingPositionMarker(),
+                          ),
+                        ],
+                      ),
                   ],
                 ),
-              ),
-            ],
+                Positioned(
+                  top: 12,
+                  left: 12,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_metaData != null && _metaData!.isNotEmpty)
+                            for (final entry in _metaDataRows(_metaData!)) ...[
+                              Card(
+                                margin: EdgeInsets.zero,
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 6,
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      _metaIcon(entry.$1),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        entry.$2,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodyMedium
+                                            ?.copyWith(
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                            ],
+                        ],
+                      ),
+                      if (_lastUpdate != null) ...[
+                        const SizedBox(height: 6),
+                        Card(
+                          margin: EdgeInsets.zero,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
+                            child: Text(
+                              'Updated ${_formatTime(_lastUpdate!)}',
+                              style: Theme.of(context).textTheme.bodySmall
+                                  ?.copyWith(fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                Positioned(
+                  right: 12,
+                  bottom: 12,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      FloatingActionButton.small(
+                        heroTag: 'focusPosition',
+                        backgroundColor: buttonColor,
+                        foregroundColor: buttonIconColor,
+                        tooltip: 'Focus current position',
+                        onPressed: _focusPosition,
+                        child: const Icon(Icons.my_location),
+                      ),
+                      const SizedBox(height: 8),
+                      FloatingActionButton.small(
+                        heroTag: 'zoomIn',
+                        backgroundColor: buttonColor,
+                        foregroundColor: buttonIconColor,
+                        tooltip: 'Zoom in',
+                        onPressed: () => _zoomBy(1),
+                        child: const Icon(Icons.add),
+                      ),
+                      const SizedBox(height: 8),
+                      FloatingActionButton.small(
+                        heroTag: 'zoomOut',
+                        backgroundColor: buttonColor,
+                        foregroundColor: buttonIconColor,
+                        tooltip: 'Zoom out',
+                        onPressed: () => _zoomBy(-1),
+                        child: const Icon(Icons.remove),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
-        ),
-      ],
-    ),
-  );
+        ],
+      ),
+    );
+  }
 }
 
 class _PulsingPositionMarker extends StatefulWidget {
