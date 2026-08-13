@@ -87,7 +87,7 @@
 const POLL_MS = 5000;
 const TRACK_URL = "track.json";       // written continuously by garmin_livetrack.py
 const SESSION_URL = "session.json";   // session metadata (status etc.)
-const COURSE_URL = "course.json";     // planned route ("loaded track"); may not exist
+const COURSE_URL = "course.json";     // planned route (updated while the session runs)
 
 const map = L.map('map', { zoomControl: true });
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -96,24 +96,43 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 }).addTo(map);
 
 const line = L.polyline([], { color: '#2f6f6a', weight: 4, opacity: 0.85 }).addTo(map);
-const courseLine = L.polyline([], { color: '#d9622b', weight: 3, dashArray: '8 10', opacity: 0.7 }).addTo(map);
+const courseLine = L.polyline([], { color: '#FF0081', weight: 4, opacity: 0.85, dashArray: '6 8' }).addTo(map);
 const startIcon = L.divIcon({ className: '', html: '<div style="width:10px;height:10px;border-radius:50%;background:#6b7280;border:2px solid white;"></div>' });
 const liveIcon = L.divIcon({ className: '', html: '<div style="width:16px;height:16px;border-radius:50%;background:#d9622b;border:3px solid white;box-shadow:0 0 0 4px rgba(217,98,43,0.25);"></div>' });
 
 let startMarker = null;
 let liveMarker = null;
 let fitted = false;
+let coursePoints = [];
 
 function fmt(n, d = 1) {
   return (typeof n === 'number') ? n.toFixed(d) : '–';
 }
 
+async function refreshCourse() {
+  try {
+    const resp = await fetch(COURSE_URL + '?_=' + Date.now());
+    if (!resp.ok) return false;
+    const nextCoursePoints = await resp.json();
+    if (Array.isArray(nextCoursePoints) && nextCoursePoints.length > 0 &&
+        JSON.stringify(nextCoursePoints) !== JSON.stringify(coursePoints)) {
+      coursePoints = nextCoursePoints;
+      courseLine.setLatLngs(coursePoints.map(p => [p.latitude, p.longitude]));
+      return true;
+    }
+  } catch (err) {
+    // course.json may not exist yet (no course on this session) -- that's fine
+  }
+  return false;
+}
+
 async function refresh() {
   try {
-    const [trackResp, sessionResp, courseResp] = await Promise.all([
+    const courseChanged = await refreshCourse();
+
+    const [trackResp, sessionResp] = await Promise.all([
       fetch(TRACK_URL + '?_=' + Date.now()),
-      fetch(SESSION_URL + '?_=' + Date.now()).catch(() => null),
-      fetch(COURSE_URL + '?_=' + Date.now()).catch(() => null)
+      fetch(SESSION_URL + '?_=' + Date.now()).catch(() => null)
     ]);
 
     if (!trackResp.ok) throw new Error('track fetch failed');
@@ -125,20 +144,6 @@ async function refresh() {
       const isLive = info.sessionStatus === 'InProgress';
       statusEl.textContent = `${info.sessionName || 'session'} — ${info.userDisplayName || ''} — ${info.sessionStatus || 'unknown'}`;
       statusEl.className = isLive ? 'live' : 'expired';
-    }
-
-    // Planned route ("loaded track") drawn as a dashed line. Some sessions
-    // have none, and the file simply won't exist yet -- clear it in that case.
-    let courseBounds = null;
-    if (courseResp && courseResp.ok) {
-      const course = await courseResp.json();
-      const cpts = (course.points || [])
-        .map(p => [p.latitude, p.longitude])
-        .filter(c => c[0] != null && c[1] != null);
-      courseLine.setLatLngs(cpts);
-      if (cpts.length) courseBounds = courseLine.getBounds();
-    } else {
-      courseLine.setLatLngs([]);
     }
 
     if (points.length > 0) {
@@ -161,9 +166,15 @@ async function refresh() {
       );
 
       if (!fitted) {
-        const bounds = courseBounds ? line.getBounds().extend(courseBounds) : line.getBounds();
+        const bounds = line.getBounds();
+        if (coursePoints.length > 0) bounds.extend(courseLine.getBounds());
         map.fitBounds(bounds, { padding: [40, 40] });
         fitted = true;
+      } else if (courseChanged) {
+        // Reframe when Garmin replaces the course so the new route is visible.
+        const bounds = line.getBounds();
+        bounds.extend(courseLine.getBounds());
+        map.fitBounds(bounds, { padding: [40, 40] });
       } else {
         map.panTo(lastLatLng, { animate: true });
       }
@@ -176,11 +187,6 @@ async function refresh() {
         meta.SPEED ? `${(parseFloat(meta.SPEED) * 3.6).toFixed(1)} km/h` : '–';
       document.getElementById('stat-updated').textContent =
         new Date(last.timestamp).toLocaleTimeString();
-    } else if (courseBounds && !fitted) {
-      // No live points yet, but a planned route exists -- frame it instead
-      // of leaving the map at the default world view.
-      map.fitBounds(courseBounds, { padding: [40, 40] });
-      fitted = true;
     }
   } catch (err) {
     document.getElementById('status').textContent = 'waiting for data…';

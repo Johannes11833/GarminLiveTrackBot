@@ -6,15 +6,21 @@ authors = ["Johannes <24914225+Johannes11833@users.noreply.github.com>"]
 # readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.9"
+python = "^3.10"
 imapclient = "^3.1.0"
 dotenv = "^0.9.9"
 requests = "^2.32.5"
 rich = "^14.2.0"
-qrcode = "^7.4"
+qrcode = "^8.2"
+playwright = "^1.55"
+# greenlet 3.2 has no CPython 3.9 Windows wheel; keep Poetry installs binary-only.
+greenlet = "^3.5.5"
+fastapi = "^0.141.1"
+uvicorn = {version = "^0.34.0", extras = ["standard"]}
 
 [tool.poetry.scripts]
 garmin-livetrack = "garmin_livetrack.main:cli"
+garmin-livetrack-api = "garmin_livetrack.livetrack_api:cli"
 
 [build-system]
 requires = ["poetry-core"]
