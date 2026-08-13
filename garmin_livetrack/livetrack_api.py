@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from playwright.sync_api import sync_playwright
 
@@ -325,6 +326,13 @@ class TrackerManager:
 
 manager = TrackerManager()
 app = FastAPI(title="Garmin LiveTrack API")
+app.add_middleware(
+    CORSMiddleware,
+    # Local dev viewer; Flutter's web server uses a random port, so allow any.
+    allow_origins=["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
 
 
 @app.on_event("shutdown")

@@ -5,6 +5,16 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Flutter",
+            "type": "dart",
+            "request": "launch",
+            "program": "garmin_livetrack_viewer/lib/main.dart",
+            "deviceId": "chrome",
+            "toolArgs": [
+                "--wasm"
+            ]
+        },
+        {
             "name": "Python Debugger: main.py",
             "type": "debugpy",
             "request": "launch",
