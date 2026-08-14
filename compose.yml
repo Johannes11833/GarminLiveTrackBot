@@ -16,3 +16,20 @@ services:
       - AUTO_RECEIVE_SCHEDULE=0 22 * * *
     volumes:
       - "./signal-api-data:/home/.local/share/signal-cli" #map "signal-cli-config" folder on host system into docker container. the folder contains the password and cryptographic keys when a new number is registered
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./garmin_livetrack_viewer/build/web:/srv/viewer:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - garmin-livetrack
+
+volumes:
+  caddy_data:
+  caddy_config:

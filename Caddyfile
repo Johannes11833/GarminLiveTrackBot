@@ -1,0 +1,26 @@
+# Replace livetrack.example.com with your real domain.
+# HTTPS is required for service workers and Web Push notifications.
+livetrack.example.com {
+	encode gzip
+
+	# API routes (same origin as the viewer, so no CORS needed)
+	handle /push/* {
+		reverse_proxy garmin-livetrack:8000
+	}
+	handle /trackings* {
+		reverse_proxy garmin-livetrack:8000
+	}
+	handle /docs* {
+		reverse_proxy garmin-livetrack:8000
+	}
+	handle /openapi.json {
+		reverse_proxy garmin-livetrack:8000
+	}
+
+	# Flutter web viewer (built with `flutter build web`)
+	handle {
+		root * /srv/viewer
+		try_files {path} /index.html
+		file_server
+	}
+}

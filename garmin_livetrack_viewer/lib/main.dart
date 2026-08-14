@@ -8,7 +8,12 @@ import 'package:flutter_map_vector_tiles/flutter_map_vector_tiles.dart' as vt;
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
-const apiBaseUrl = 'http://127.0.0.1:8000';
+import 'push_service.dart';
+
+// API origin; empty means "same origin" (production behind a reverse proxy).
+// Override for local development, e.g.:
+//   flutter run -d chrome --dart-define=API_BASE_URL=http://127.0.0.1:8000
+const apiBaseUrl = String.fromEnvironment('API_BASE_URL');
 
 // Configurable colors: position (live dot), track (route), course (planned).
 const positionColor = Colors.deepPurple;
@@ -94,6 +99,12 @@ class _LiveTrackPageState extends State<LiveTrackPage>
   Map<String, dynamic>? _metaData;
   DateTime? _lastUpdate;
   vt.Style? _vectorStyle;
+  PushService? _pushService;
+
+  Uri _apiUri(String path) {
+    if (apiBaseUrl.isNotEmpty) return Uri.parse('$apiBaseUrl$path');
+    return Uri.base.replace(path: path, query: null, fragment: null);
+  }
 
   @override
   void initState() {
@@ -103,6 +114,42 @@ class _LiveTrackPageState extends State<LiveTrackPage>
     WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
     _loadVectorStyle();
     _timer = Timer.periodic(const Duration(seconds: 5), (_) => _refresh());
+    _initPush();
+  }
+
+  void _initPush() {
+    final token = Uri.base.queryParameters['token'];
+    if (token == null || token.trim().isEmpty) return;
+    final service = PushService(apiBaseUrl: apiBaseUrl, token: token.trim());
+    _pushService = service..addListener(_onPushChanged);
+    service.init();
+  }
+
+  void _onPushChanged() {
+    final service = _pushService;
+    if (service == null || service.status != PushStatus.failed) return;
+    _showToast('Notifications unavailable: ${service.error}');
+  }
+
+  Future<void> _enableNotifications() async {
+    final service = _pushService;
+    if (service == null) {
+      _showToast('No registration token. Pass ?token=<token> to the app URL.');
+      return;
+    }
+    await service.enable();
+    switch (service.status) {
+      case PushStatus.enabled:
+        _showToast('Notifications enabled.');
+      case PushStatus.denied:
+        _showToast('Notifications blocked in browser settings.');
+      case PushStatus.failed:
+        _showToast('Notifications unavailable: ${service.error}');
+      case PushStatus.unsupported:
+        _showToast(
+          'Notifications need HTTPS and a supported browser (iOS 16.4+ when installed).',
+        );
+    }
   }
 
   Future<void> _loadVectorStyle() async {
@@ -120,6 +167,7 @@ class _LiveTrackPageState extends State<LiveTrackPage>
 
   @override
   void dispose() {
+    _pushService?.dispose();
     _vectorStyle?.dispose();
     _cameraAnimation.dispose();
     _timer?.cancel();
@@ -127,7 +175,7 @@ class _LiveTrackPageState extends State<LiveTrackPage>
   }
 
   Future<List<dynamic>> _getList(String path) async {
-    final response = await http.get(Uri.parse('$apiBaseUrl$path'));
+    final response = await http.get(_apiUri(path));
     if (response.statusCode != 200) {
       throw Exception('API returned HTTP ${response.statusCode}.');
     }
@@ -151,7 +199,7 @@ class _LiveTrackPageState extends State<LiveTrackPage>
   }
 
   Future<Map<String, dynamic>?> _getMap(String path) async {
-    final response = await http.get(Uri.parse('$apiBaseUrl$path'));
+    final response = await http.get(_apiUri(path));
     if (response.statusCode != 200) return null;
     final body = jsonDecode(response.body);
     return body is Map<String, dynamic> ? body : null;
@@ -342,6 +390,10 @@ class _LiveTrackPageState extends State<LiveTrackPage>
           ],
         ),
         actions: [
+          _NotificationButton(
+            service: _pushService,
+            onPressed: _enableNotifications,
+          ),
           IconButton(onPressed: _refresh, icon: const Icon(Icons.refresh)),
         ],
       ),
@@ -503,6 +555,48 @@ class _LiveTrackPageState extends State<LiveTrackPage>
           ),
         ],
       ),
+    );
+  }
+}
+
+class _NotificationButton extends StatelessWidget {
+  const _NotificationButton({required this.service, required this.onPressed});
+
+  final PushService? service;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    if (service == null) return const SizedBox.shrink();
+    return ListenableBuilder(
+      listenable: service!,
+      builder: (context, _) {
+        final status = service!.status;
+        final (icon, tooltip) = switch (status) {
+          PushStatus.enabled => (
+            Icons.notifications_active,
+            'Notifications enabled',
+          ),
+          PushStatus.denied => (
+            Icons.notifications_off,
+            'Notifications blocked',
+          ),
+          PushStatus.unsupported => (
+            Icons.notifications_none,
+            'Enable notifications',
+          ),
+          PushStatus.failed => (
+            Icons.notifications_none,
+            'Notifications unavailable',
+          ),
+        };
+        final enabled = status != PushStatus.enabled && !service!.busy;
+        return IconButton(
+          icon: Icon(icon),
+          tooltip: tooltip,
+          onPressed: enabled ? onPressed : null,
+        );
+      },
     );
   }
 }

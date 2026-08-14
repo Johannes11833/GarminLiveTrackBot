@@ -15,6 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from playwright.sync_api import sync_playwright
 
+from garmin_livetrack import push
+
 POLL_SECONDS = 5
 TERMINAL_STATES = {"stopped", "ended", "error"}
 URL_RE = re.compile(
@@ -104,6 +106,8 @@ class Tracker:
         self.last_timestamp: Optional[int] = None
         self.track_begin: Optional[str] = None
         self.csrf_token: Optional[str] = None
+        self._start_notified = False
+        self._end_notified = False
 
     def start(self) -> None:
         self.thread.start()
@@ -188,15 +192,25 @@ class Tracker:
         with self.lock:
             self.session = session
             self.track_begin = session.get("start") or self.track_begin
+            started = self._start_notified
+            self._start_notified = self._start_notified or live
+            ended = self._end_notified
+            self._end_notified = self._end_notified or not live
         print(
             f"[{self.session_id}] session: {session.get('sessionName')} | "
             f"{session.get('userDisplayName')} | {session['sessionStatus']}"
         )
+        name = str(session.get("sessionName") or self.session_id)
+        if live and not started:
+            push.notify(self.session_id, "LiveTrack started", name)
+        elif not live and not ended:
+            push.notify(self.session_id, "LiveTrack ended", name)
         return live
 
     def _save_track(self, data: Any) -> None:
         raw_points = data if isinstance(data, list) else data.get("trackPoints", [])
         points = [normalize_point(point) for point in raw_points if isinstance(point, dict)]
+        progress_point = None
         with self.lock:
             new_points = [
                 point
@@ -330,14 +344,17 @@ app.add_middleware(
     CORSMiddleware,
     # Local dev viewer; Flutter's web server uses a random port, so allow any.
     allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
+
+push.start()
 
 
 @app.on_event("shutdown")
 def shutdown() -> None:
     manager.stop_all()
+    push.stop()
 
 
 @app.post("/trackings", status_code=status.HTTP_201_CREATED)
@@ -385,6 +402,60 @@ def stop_tracking(session_id: str):
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+class SubscribeRequest(BaseModel):
+    token: str
+    subscription: Dict[str, Any]
+
+
+class UnsubscribeRequest(BaseModel):
+    token: str
+    endpoint: str
+
+
+@app.get("/push/public-key")
+def get_public_key():
+    return {"publicKey": push.public_key()}
+
+
+@app.post("/push/subscribe", status_code=status.HTTP_201_CREATED)
+def subscribe(request: SubscribeRequest):
+    if not push.token_valid(request.token):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid registration token.",
+        )
+    subscription = request.subscription
+    try:
+        push.subscribe(subscription)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(error),
+        )
+    return {"status": "subscribed"}
+
+
+@app.delete("/push/subscribe", status_code=status.HTTP_204_NO_CONTENT)
+def unsubscribe(request: UnsubscribeRequest):
+    if not push.token_valid(request.token):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid registration token.",
+        )
+    push.unsubscribe(request.endpoint)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get("/push/subscriptions")
+def list_subscriptions(token: str):
+    if not push.token_valid(token):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid registration token.",
+        )
+    return push.subscriptions()
 
 
 def cli() -> None:

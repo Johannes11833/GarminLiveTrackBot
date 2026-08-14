@@ -17,6 +17,7 @@ playwright = "^1.55"
 greenlet = "^3.5.5"
 fastapi = "^0.141.1"
 uvicorn = {version = "^0.34.0", extras = ["standard"]}
+pywebpush = "^2.0.0"
 
 [tool.poetry.scripts]
 garmin-livetrack = "garmin_livetrack.main:cli"
