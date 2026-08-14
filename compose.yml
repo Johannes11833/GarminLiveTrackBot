@@ -1,21 +1,27 @@
 version: "3"
 services:
   garmin-livetrack:
+    build: .
     image: ghcr.io/johannes11833/garmin-livetrack-bot:latest
     env_file:
       - .env
+    environment:
+      - LIVETRACK_API_URL=http://garmin-livetrack-api:8000
     volumes:
       - ./garmin-livetrack-data:/app/garmin-livetrack-data
     depends_on:
-      - signal-api
+      - garmin-livetrack-api
 
-  signal-api:
-    image: bbernhard/signal-cli-rest-api:latest
+  garmin-livetrack-api:
+    build: .
+    image: ghcr.io/johannes11833/garmin-livetrack-bot:latest
+    entrypoint: ["garmin-livetrack-api"]
+    env_file:
+      - .env
     environment:
-      - MODE=normal #supported modes: json-rpc, native, normal
-      - AUTO_RECEIVE_SCHEDULE=0 22 * * *
+      - LIVETRACK_API_HOST=0.0.0.0
     volumes:
-      - "./signal-api-data:/home/.local/share/signal-cli" #map "signal-cli-config" folder on host system into docker container. the folder contains the password and cryptographic keys when a new number is registered
+      - ./garmin-livetrack-data:/app/garmin-livetrack-data
 
   caddy:
     image: caddy:2-alpine
@@ -28,7 +34,7 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - garmin-livetrack
+      - garmin-livetrack-api
 
 volumes:
   caddy_data:

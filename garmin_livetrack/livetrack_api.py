@@ -5,6 +5,7 @@ Run with:
 """
 
 import copy
+import os
 import re
 import threading
 from datetime import datetime, timezone
@@ -461,4 +462,7 @@ def list_subscriptions(token: str):
 def cli() -> None:
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    # Bind to 0.0.0.0 inside a container so other services can reach the API;
+    # default to loopback-only for local development.
+    host = os.getenv("LIVETRACK_API_HOST", "127.0.0.1")
+    uvicorn.run(app, host=host, port=8000)

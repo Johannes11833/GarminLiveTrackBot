@@ -1,7 +1,7 @@
-# Garmin Livetrack Signal Bot
+# Garmin Livetrack Bot
 
 ## Table of Contents
-- [Garmin Livetrack Signal Bot](#garmin-livetrack-signal-bot)
+- [Garmin Livetrack Bot](#garmin-livetrack-bot)
   - [Table of Contents](#table-of-contents)
   - [Docker Setup](#docker-setup)
     - [Docker compose setup](#docker-compose-setup)
@@ -11,18 +11,26 @@
 ## Docker Setup
 ### Docker compose setup
 
-First setup your .env file as described below.
-Then run this command to startup the compose project and display only the logs for the garmin-livetrack bot:
+First setup your .env file as described below. Then start the compose project
+(use `--build` to build the image from the local source instead of pulling it):
 
 ```bash
-docker compose up garmin-livetrack
+docker compose up -d --build
 ```
 
-On the first run, open the qr-code generated in the data folder of the bot and scan it with the signal app.
+The email listener watches the configured mailbox and automatically starts a
+tracking session through the API for every received Garmin LiveTrack link.
+Registered devices then receive push notifications (see "Web viewer & push
+notifications" below).
 
 ### Run livetrack bot w/o a container
+
 ```bash
-docker run --rm --name signal-api -p 8080:8080 -v "./signal-api-data:/home/.local/share/signal-cli" -e 'MODE=normal' bbernhard/signal-cli-rest-api
+# terminal 1: API
+poetry run garmin-livetrack-api
+
+# terminal 2: email listener (feeds URLs into the API)
+poetry run garmin-livetrack
 ```
 
 ### Extract LiveTrack data
@@ -137,9 +145,9 @@ LIVETRACK_EMAIL_HOST = "imap.gmx.net"
 LIVETRACK_EMAIL_USERNAME = "email123@gmx.de"
 LIVETRACK_EMAIL_PASSWORD = "ur-password"
 
-LIVETRACK_SIGNAL_API = "http://signal-api:8080"
-LIVETRACK_SENDER_PHONE_NUMBER = "+49123456789"
-LIVETRACK_RECIPIENT_PHONE_NUMBERS = "+49123456789,+49987654321"
-
 LIVETRACK_PUSH_TOKEN = "change-me"
+
+# optional: where the email listener finds the API
+# (default http://127.0.0.1:8000; compose sets it to the api service)
+LIVETRACK_API_URL = "http://127.0.0.1:8000"
 ```

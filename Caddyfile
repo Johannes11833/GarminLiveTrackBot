@@ -5,16 +5,16 @@ livetrack.example.com {
 
 	# API routes (same origin as the viewer, so no CORS needed)
 	handle /push/* {
-		reverse_proxy garmin-livetrack:8000
+		reverse_proxy garmin-livetrack-api:8000
 	}
 	handle /trackings* {
-		reverse_proxy garmin-livetrack:8000
+		reverse_proxy garmin-livetrack-api:8000
 	}
 	handle /docs* {
-		reverse_proxy garmin-livetrack:8000
+		reverse_proxy garmin-livetrack-api:8000
 	}
 	handle /openapi.json {
-		reverse_proxy garmin-livetrack:8000
+		reverse_proxy garmin-livetrack-api:8000
 	}
 
 	# Flutter web viewer (built with `flutter build web`)
