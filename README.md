@@ -6,6 +6,10 @@
   - [Docker Setup](#docker-setup)
     - [Docker compose setup](#docker-compose-setup)
     - [Run livetrack bot w/o a container](#run-livetrack-bot-wo-a-container)
+    - [Extract LiveTrack data](#extract-livetrack-data)
+    - [LiveTrack REST API](#livetrack-rest-api)
+    - [Web viewer \& push notifications](#web-viewer--push-notifications)
+    - [Registration token](#registration-token)
     - [Example .env file](#example-env-file)
 
 ## Docker Setup
