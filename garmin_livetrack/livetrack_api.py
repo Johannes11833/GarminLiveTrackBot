@@ -49,6 +49,8 @@ def normalize_point(raw: Dict[str, Any]) -> Dict[str, Any]:
         "TOTAL_DISTANCE": raw.get("totalDistanceMeters"),
         "TOTAL_DURATION": raw.get("totalDurationSecs"),
         "ACTIVITY_TYPE": raw.get("activityType"),
+        "HEART_RATE": raw.get("heartRateBeatsPerMin"),
+        "POINT_STATUS": raw.get("pointStatus"),
     }
     return {
         "latitude": raw.get("latitude", raw.get("lat", position.get("lat"))),
@@ -57,7 +59,7 @@ def normalize_point(raw: Dict[str, Any]) -> Dict[str, Any]:
         ),
         "timestamp": timestamp,
         "metaData": metadata,
-        "events": raw.get("events", []),
+        "events": raw.get("events", raw.get("eventTypes", [])),
     }
 
 

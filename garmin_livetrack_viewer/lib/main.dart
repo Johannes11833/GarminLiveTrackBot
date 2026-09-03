@@ -57,6 +57,11 @@ String _formatElevation(Object? value) {
   return '${value.toStringAsFixed(0)} m';
 }
 
+String _formatHeartRate(Object? value) {
+  if (value is! num) return '';
+  return '${value.toStringAsFixed(0)} bpm';
+}
+
 void main() => runApp(const LiveTrackApp());
 
 class LiveTrackApp extends StatelessWidget {
@@ -288,6 +293,7 @@ class _LiveTrackPageState extends State<LiveTrackPage>
     add('Duration', _formatDuration(meta['TOTAL_DURATION']));
     add('Speed', _formatSpeed(meta['SPEED']));
     add('Elevation', _formatElevation(meta['ELEVATION']));
+    add('Heart rate', _formatHeartRate(meta['HEART_RATE']));
     return rows;
   }
 
@@ -296,6 +302,7 @@ class _LiveTrackPageState extends State<LiveTrackPage>
     'Duration' => const Icon(Icons.timer_outlined, size: 18),
     'Speed' => const Icon(Icons.speed, size: 18),
     'Elevation' => const Icon(Icons.terrain, size: 18),
+    'Heart rate' => const Icon(Icons.favorite, size: 18),
     _ => const Icon(Icons.info_outline, size: 18),
   };
 
