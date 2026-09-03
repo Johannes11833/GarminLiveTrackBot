@@ -28,6 +28,12 @@ services:
       - ./garmin-livetrack-data:/app/garmin-livetrack-data
     ports:
       - 8000:8000
+  garmin-livetrack-viewer:
+    build:
+      context: .
+      dockerfile: Dockerfile.viewer
+    image: ghcr.io/johannes11833/garmin-livetrack-viewer:latest
+
   caddy:
     image: caddy:2-alpine
     ports:
@@ -35,11 +41,11 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./garmin_livetrack_viewer/build/web:/srv/viewer:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
       - garmin-livetrack-api
+      - garmin-livetrack-viewer
 
 volumes:
   caddy_data:

@@ -18,10 +18,8 @@ localhost {
 		reverse_proxy garmin-livetrack-api:8000
 	}
 
-	# Flutter web viewer (built with `flutter build web`)
+	# Flutter web viewer, built and served by its own container (Dockerfile.viewer)
 	handle {
-		root * /srv/viewer
-		try_files {path} /index.html
-		file_server
+		reverse_proxy garmin-livetrack-viewer:80
 	}
 }

@@ -14,6 +14,8 @@ jobs:
             image: garmin-livetrack-api
           - dockerfile: Dockerfile.listener
             image: garmin-livetrack-email-listener
+          - dockerfile: Dockerfile.viewer
+            image: garmin-livetrack-viewer
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

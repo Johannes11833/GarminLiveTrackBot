@@ -84,8 +84,10 @@ tracking session and can receive push notifications when a session starts or
 ends. It uses the standard Web Push API (VAPID), no Firebase or other
 third-party push service.
 
-Build the viewer (the `API_BASE_URL` dart-define is optional; when empty the
-app talks to the same origin as the page):
+`docker compose up -d --build` builds and serves the viewer automatically
+(`Dockerfile.viewer`, reverse-proxied by Caddy). To build it by hand instead
+(the `API_BASE_URL` dart-define is optional; when empty the app talks to the
+same origin as the page):
 
 ```bash
 cd garmin_livetrack_viewer

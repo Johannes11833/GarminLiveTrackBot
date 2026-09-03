@@ -1,0 +1,37 @@
+FROM debian:bookworm-slim AS builder
+
+# Pin to the exact Flutter release this project's pubspec.yaml was written
+# against (sdk: ^3.13.0). Third-party prebuilt Flutter images (e.g.
+# cirruslabs/flutter) lag behind and may not have a tag new enough yet, so
+# install the official SDK archive directly instead.
+ENV FLUTTER_VERSION=3.47.0 \
+    PATH="/opt/flutter/bin:${PATH}"
+
+RUN apt-get update && \
+    apt-get install --no-install-recommends -y curl xz-utils git ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${FLUTTER_VERSION}-stable.tar.xz" \
+    | tar -xJ -C /opt && \
+    git config --global --add safe.directory /opt/flutter && \
+    flutter config --no-analytics && \
+    flutter precache --web
+
+WORKDIR /app
+
+# Fetch packages first so this layer stays cached across source changes.
+COPY garmin_livetrack_viewer/pubspec.yaml garmin_livetrack_viewer/pubspec.lock ./
+RUN flutter pub get
+
+COPY garmin_livetrack_viewer/ ./
+# API_BASE_URL left empty: the viewer calls the same origin as the page,
+# which Caddy reverse-proxies to the API (see Caddyfile).
+RUN flutter build web --release
+
+
+FROM nginx:1.27-alpine AS runtime
+
+COPY --from=builder /app/build/web /usr/share/nginx/html
+COPY garmin_livetrack_viewer/nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 80

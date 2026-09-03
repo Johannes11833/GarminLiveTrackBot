@@ -1,0 +1,7 @@
+garmin_livetrack_viewer/.dart_tool/
+garmin_livetrack_viewer/build/
+garmin_livetrack_viewer/.flutter-plugins-dependencies
+garmin-livetrack-data/
+signal-api-data/
+.venv/
+.git/
