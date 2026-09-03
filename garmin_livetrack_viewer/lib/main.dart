@@ -108,6 +108,7 @@ class _LiveTrackPageState extends State<LiveTrackPage>
   Map<String, dynamic>? _session;
   Map<String, dynamic>? _metaData;
   DateTime? _lastUpdate;
+  String? _trackerState;
   vt.Style? _vectorStyle;
   PushService? _pushService;
 
@@ -249,10 +250,11 @@ class _LiveTrackPageState extends State<LiveTrackPage>
       final track = _coordinates(trackData);
       final course = _coordinates(data[1]);
       final lastMeta = trackData.isNotEmpty ? trackData.last['metaData'] : null;
+      final trackerState = snapshot['state']?.toString();
       final fingerprint =
           '$sessionId|${track.length}|${course.length}|'
           '${track.isEmpty ? '' : track.last}|'
-          '${course.isEmpty ? '' : course.first}|$lastMeta';
+          '${course.isEmpty ? '' : course.first}|$lastMeta|$trackerState';
       if (fingerprint == _lastFingerprint) {
         // Retry a pending auto-center even when nothing changed.
         _centerMapOnce(track, course);
@@ -275,6 +277,7 @@ class _LiveTrackPageState extends State<LiveTrackPage>
             : null;
         _metaData = lastMeta is Map<String, dynamic> ? lastMeta : null;
         _lastUpdate = lastUpdate;
+        _trackerState = trackerState;
       });
       _centerMapOnce(track, course);
     } catch (error, stackTrace) {
@@ -454,7 +457,7 @@ class _LiveTrackPageState extends State<LiveTrackPage>
                           ),
                       ],
                     ),
-                    if (_track.isNotEmpty)
+                    if (_track.isNotEmpty && _trackerState != 'ended')
                       MarkerLayer(
                         markers: [
                           Marker(
@@ -489,7 +492,9 @@ class _LiveTrackPageState extends State<LiveTrackPage>
                                   const SizedBox(width: 6),
                                   Text(
                                     entry.$2,
-                                    style: Theme.of(context).textTheme.bodyMedium
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodyMedium
                                         ?.copyWith(fontWeight: FontWeight.w600),
                                   ),
                                 ],
@@ -508,6 +513,7 @@ class _LiveTrackPageState extends State<LiveTrackPage>
                     userName: _session?['userDisplayName']?.toString().trim(),
                     startTime: _parseIsoDateTime(_session?['start']),
                     lastUpdate: _lastUpdate,
+                    ended: _trackerState == 'ended',
                     onSendMessage: () =>
                         _showToast('Messaging is coming soon.'),
                   ),
@@ -604,18 +610,20 @@ class _LiveUserOverlay extends StatelessWidget {
     required this.onSendMessage,
     this.startTime,
     this.lastUpdate,
+    this.ended = false,
   });
 
   final String? userName;
   final DateTime? startTime;
   final DateTime? lastUpdate;
+  final bool ended;
   final VoidCallback onSendMessage;
 
   @override
   Widget build(BuildContext context) {
     if (userName == null || userName!.isEmpty) return const SizedBox.shrink();
     return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 260),
+      constraints: const BoxConstraints(maxWidth: 300),
       child: Card(
         margin: EdgeInsets.zero,
         child: Padding(
@@ -626,10 +634,19 @@ class _LiveUserOverlay extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  const CircleAvatar(child: Icon(Icons.directions_bike)),
+                  CircleAvatar(
+                    backgroundColor: ended
+                        ? Theme.of(context).colorScheme.surfaceContainerHighest
+                        : null,
+                    child: Icon(
+                      Icons.directions_bike,
+                      color: ended ? Theme.of(context).disabledColor : null,
+                    ),
+                  ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: RichText(
+                      maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       text: TextSpan(
                         style: Theme.of(context).textTheme.bodyMedium,
@@ -638,19 +655,25 @@ class _LiveUserOverlay extends StatelessWidget {
                             text: userName,
                             style: const TextStyle(fontWeight: FontWeight.bold),
                           ),
-                          const TextSpan(text: ' is live'),
+                          TextSpan(
+                            text: ended
+                                ? "'s LiveTrack session has ended"
+                                : ' is live',
+                          ),
                         ],
                       ),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 10),
-              ElevatedButton.icon(
-                onPressed: onSendMessage,
-                icon: const Icon(Icons.send, size: 18),
-                label: const Text('Send message'),
-              ),
+              if (!ended) ...[
+                const SizedBox(height: 10),
+                ElevatedButton.icon(
+                  onPressed: onSendMessage,
+                  icon: const Icon(Icons.send, size: 18),
+                  label: const Text('Send message'),
+                ),
+              ],
               if (startTime != null || lastUpdate != null) ...[
                 const SizedBox(height: 8),
                 Text(
