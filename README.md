@@ -34,7 +34,7 @@ notifications" below).
 poetry run garmin-livetrack-api
 
 # terminal 2: email listener (feeds URLs into the API)
-poetry run garmin-livetrack
+poetry run garmin-livetrack-email-listener
 ```
 
 ### Extract LiveTrack data

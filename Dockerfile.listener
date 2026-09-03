@@ -1,0 +1,48 @@
+FROM python:3.13-slim AS base
+
+ENV VIRTUAL_ENV=/app/.venv \
+    PATH="/app/.venv/bin:$PATH" \
+    DEBIAN_FRONTEND=noninteractive
+
+
+FROM base AS builder
+
+ENV POETRY_NO_INTERACTION=1 \
+    POETRY_VIRTUALENVS_IN_PROJECT=1 \
+    POETRY_VIRTUALENVS_CREATE=1 \
+    POETRY_CACHE_DIR=/tmp/poetry_cache
+
+# playwright is a dependency of the project as a whole (single pyproject.toml
+# shared with the API image) and ships no musllinux wheels, so this can't be
+# an Alpine image even though the listener itself never imports playwright.
+RUN apt-get update && \
+    apt-get install --no-install-recommends -y build-essential && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Poetry
+RUN pip install poetry==1.6.1
+
+# Install dependencies first so this layer stays cached across source
+# changes, then install the project itself so its console scripts
+# (garmin-livetrack-email-listener, garmin-livetrack-api) get written into
+# the venv.
+COPY pyproject.toml poetry.lock ./
+RUN poetry install --no-root && rm -rf $POETRY_CACHE_DIR
+
+COPY garmin_livetrack /app/garmin_livetrack
+RUN poetry install && rm -rf $POETRY_CACHE_DIR
+
+
+FROM base AS runtime
+
+# The email listener only talks to IMAP and to the API over HTTP; it never
+# touches Playwright/Chromium, so it stays on Alpine (no glibc requirement,
+# much smaller image than Dockerfile.api).
+COPY --from=builder ${VIRTUAL_ENV} ${VIRTUAL_ENV}
+COPY garmin_livetrack /app/garmin_livetrack
+
+WORKDIR /app
+
+ENTRYPOINT ["garmin-livetrack-email-listener"]

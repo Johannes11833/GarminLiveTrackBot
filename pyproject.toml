@@ -20,7 +20,7 @@ uvicorn = {version = "^0.34.0", extras = ["standard"]}
 pywebpush = "^2.0.0"
 
 [tool.poetry.scripts]
-garmin-livetrack = "garmin_livetrack.main:cli"
+garmin-livetrack-email-listener = "garmin_livetrack.main:cli"
 garmin-livetrack-api = "garmin_livetrack.livetrack_api:cli"
 
 [build-system]

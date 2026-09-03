@@ -1,8 +1,11 @@
 version: "3"
 services:
   garmin-livetrack:
-    build: .
-    image: ghcr.io/johannes11833/garmin-livetrack-bot:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.listener
+    image: ghcr.io/johannes11833/garmin-livetrack-email-listener:latest
+    init: true
     env_file:
       - .env
     environment:
@@ -13,16 +16,18 @@ services:
       - garmin-livetrack-api
 
   garmin-livetrack-api:
-    build: .
-    image: ghcr.io/johannes11833/garmin-livetrack-bot:latest
-    entrypoint: ["garmin-livetrack-api"]
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: ghcr.io/johannes11833/garmin-livetrack-api:latest
     env_file:
       - .env
     environment:
       - LIVETRACK_API_HOST=0.0.0.0
     volumes:
       - ./garmin-livetrack-data:/app/garmin-livetrack-data
-
+    ports:
+      - 8000:8000
   caddy:
     image: caddy:2-alpine
     ports:
