@@ -62,6 +62,11 @@ String _formatHeartRate(Object? value) {
   return '${value.toStringAsFixed(0)} bpm';
 }
 
+DateTime? _parseIsoDateTime(Object? value) {
+  if (value is! String || value.isEmpty) return null;
+  return DateTime.tryParse(value)?.toLocal();
+}
+
 void main() => runApp(const LiveTrackApp());
 
 class LiveTrackApp extends StatelessWidget {
@@ -465,61 +470,46 @@ class _LiveTrackPageState extends State<LiveTrackPage>
                 Positioned(
                   top: 12,
                   left: 12,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (_metaData != null && _metaData!.isNotEmpty)
-                            for (final entry in _metaDataRows(_metaData!)) ...[
-                              Card(
-                                margin: EdgeInsets.zero,
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 10,
-                                    vertical: 6,
-                                  ),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      _metaIcon(entry.$1),
-                                      const SizedBox(width: 6),
-                                      Text(
-                                        entry.$2,
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodyMedium
-                                            ?.copyWith(
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
+                      if (_metaData != null && _metaData!.isNotEmpty)
+                        for (final entry in _metaDataRows(_metaData!)) ...[
+                          Card(
+                            margin: EdgeInsets.zero,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 6,
                               ),
-                              const SizedBox(width: 6),
-                            ],
-                        ],
-                      ),
-                      if (_lastUpdate != null) ...[
-                        const SizedBox(height: 6),
-                        Card(
-                          margin: EdgeInsets.zero,
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 6,
-                            ),
-                            child: Text(
-                              'Updated ${_formatTime(_lastUpdate!)}',
-                              style: Theme.of(context).textTheme.bodySmall
-                                  ?.copyWith(fontWeight: FontWeight.w600),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  _metaIcon(entry.$1),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    entry.$2,
+                                    style: Theme.of(context).textTheme.bodyMedium
+                                        ?.copyWith(fontWeight: FontWeight.w600),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
-                        ),
-                      ],
+                          const SizedBox(width: 6),
+                        ],
                     ],
+                  ),
+                ),
+                Positioned(
+                  left: 12,
+                  bottom: 12,
+                  child: _LiveUserOverlay(
+                    userName: _session?['userDisplayName']?.toString().trim(),
+                    startTime: _parseIsoDateTime(_session?['start']),
+                    lastUpdate: _lastUpdate,
+                    onSendMessage: () =>
+                        _showToast('Messaging is coming soon.'),
                   ),
                 ),
                 Positioned(
@@ -604,6 +594,78 @@ class _NotificationButton extends StatelessWidget {
           onPressed: enabled ? onPressed : null,
         );
       },
+    );
+  }
+}
+
+class _LiveUserOverlay extends StatelessWidget {
+  const _LiveUserOverlay({
+    required this.userName,
+    required this.onSendMessage,
+    this.startTime,
+    this.lastUpdate,
+  });
+
+  final String? userName;
+  final DateTime? startTime;
+  final DateTime? lastUpdate;
+  final VoidCallback onSendMessage;
+
+  @override
+  Widget build(BuildContext context) {
+    if (userName == null || userName!.isEmpty) return const SizedBox.shrink();
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 260),
+      child: Card(
+        margin: EdgeInsets.zero,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const CircleAvatar(child: Icon(Icons.directions_bike)),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: RichText(
+                      overflow: TextOverflow.ellipsis,
+                      text: TextSpan(
+                        style: Theme.of(context).textTheme.bodyMedium,
+                        children: [
+                          TextSpan(
+                            text: userName,
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          const TextSpan(text: ' is live'),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              ElevatedButton.icon(
+                onPressed: onSendMessage,
+                icon: const Icon(Icons.send, size: 18),
+                label: const Text('Send message'),
+              ),
+              if (startTime != null || lastUpdate != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  [
+                    if (startTime != null) 'Started ${_formatTime(startTime!)}',
+                    if (lastUpdate != null)
+                      'Updated ${_formatTime(lastUpdate!)}',
+                  ].join('  •  '),
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
