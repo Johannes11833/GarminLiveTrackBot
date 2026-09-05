@@ -106,7 +106,7 @@ class LiveTrackPage extends StatefulWidget {
 
 class _LiveTrackPageState extends State<LiveTrackPage>
     with SingleTickerProviderStateMixin {
-  static const _centerZoom = 12.0;
+  static const _centerZoom = 13.0;
 
   final _mapController = MapController();
   late final AnimationController _cameraAnimation = AnimationController(
@@ -859,7 +859,10 @@ class _ProfileAvatar extends StatelessWidget {
     );
     final url = imageUrl;
     if (url == null) {
-      return CircleAvatar(backgroundColor: backgroundColor, child: fallbackIcon);
+      return CircleAvatar(
+        backgroundColor: backgroundColor,
+        child: fallbackIcon,
+      );
     }
     return ClipOval(
       child: SizedBox(
