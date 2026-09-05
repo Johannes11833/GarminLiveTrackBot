@@ -509,15 +509,35 @@ class _LiveTrackPageState extends State<LiveTrackPage>
                           ),
                       ],
                     ),
-                    if (_track.isNotEmpty && _trackerState != 'ended')
+                    if (_track.isNotEmpty)
                       MarkerLayer(
                         markers: [
                           Marker(
-                            point: _track.last,
-                            width: 72,
-                            height: 72,
-                            child: const _PulsingPositionMarker(),
+                            point: _track.first,
+                            width: 28,
+                            height: 28,
+                            child: const _EndpointMarker(
+                              icon: Icons.flag,
+                              color: Colors.green,
+                            ),
                           ),
+                          if (_trackerState == 'ended')
+                            Marker(
+                              point: _track.last,
+                              width: 28,
+                              height: 28,
+                              child: const _EndpointMarker(
+                                icon: Icons.sports_score,
+                                color: Colors.redAccent,
+                              ),
+                            )
+                          else
+                            Marker(
+                              point: _track.last,
+                              width: 72,
+                              height: 72,
+                              child: const _PulsingPositionMarker(),
+                            ),
                         ],
                       ),
                   ],
@@ -880,6 +900,28 @@ class _ProfileAvatar extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _EndpointMarker extends StatelessWidget {
+  const _EndpointMarker({required this.icon, required this.color});
+
+  final IconData icon;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.white, width: 2),
+        boxShadow: const [
+          BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2)),
+        ],
+      ),
+      child: Icon(icon, color: Colors.white, size: 16),
     );
   }
 }
