@@ -7,6 +7,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_vector_tiles/flutter_map_vector_tiles.dart' as vt;
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
+import 'package:web/web.dart' as web;
 
 import 'push_service.dart';
 
@@ -14,6 +15,22 @@ import 'push_service.dart';
 // Override for local development, e.g.:
 //   flutter run -d chrome --dart-define=API_BASE_URL=http://127.0.0.1:8000
 const apiBaseUrl = String.fromEnvironment('API_BASE_URL');
+
+const _senderNameStorageKey = 'livetrack_sender_name';
+
+String? _loadSavedSenderName() {
+  try {
+    return web.window.localStorage.getItem(_senderNameStorageKey);
+  } catch (_) {
+    return null;
+  }
+}
+
+void _saveSenderName(String name) {
+  try {
+    web.window.localStorage.setItem(_senderNameStorageKey, name);
+  } catch (_) {}
+}
 
 // Configurable colors: position (live dot), track (route), course (planned).
 const positionColor = Colors.deepPurple;
@@ -217,6 +234,37 @@ class _LiveTrackPageState extends State<LiveTrackPage>
     if (response.statusCode != 200) return null;
     final body = jsonDecode(response.body);
     return body is Map<String, dynamic> ? body : null;
+  }
+
+  String? _lastSenderName = _loadSavedSenderName();
+
+  Future<bool> _sendMessage(String sender, String content) async {
+    final sessionId = _resolveSessionId();
+    if (sessionId == null) return false;
+    _lastSenderName = sender;
+    _saveSenderName(sender);
+    try {
+      final response = await http.post(
+        _apiUri('/trackings/$sessionId/message'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'sender': sender, 'content': content}),
+      );
+      if (response.statusCode != 204) {
+        throw Exception('API returned HTTP ${response.statusCode}.');
+      }
+      _showSnack('Message sent.');
+      return true;
+    } catch (error) {
+      _showSnack('Failed to send message: $error');
+      return false;
+    }
+  }
+
+  void _showSnack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
   }
 
   void _showToast(String message) {
@@ -521,8 +569,8 @@ class _LiveTrackPageState extends State<LiveTrackPage>
                     startTime: _parseIsoDateTime(_session?['start']),
                     lastUpdate: _lastUpdate,
                     ended: _trackerState == 'ended',
-                    onSendMessage: () =>
-                        _showToast('Messaging is coming soon.'),
+                    initialSender: _lastSenderName,
+                    onSendMessage: _sendMessage,
                   ),
                 ),
                 Positioned(
@@ -611,7 +659,7 @@ class _NotificationButton extends StatelessWidget {
   }
 }
 
-class _LiveUserOverlay extends StatelessWidget {
+class _LiveUserOverlay extends StatefulWidget {
   const _LiveUserOverlay({
     required this.userName,
     required this.onSendMessage,
@@ -619,6 +667,7 @@ class _LiveUserOverlay extends StatelessWidget {
     this.startTime,
     this.lastUpdate,
     this.ended = false,
+    this.initialSender,
   });
 
   final String? userName;
@@ -626,11 +675,55 @@ class _LiveUserOverlay extends StatelessWidget {
   final DateTime? startTime;
   final DateTime? lastUpdate;
   final bool ended;
-  final VoidCallback onSendMessage;
+  final String? initialSender;
+  final Future<bool> Function(String sender, String content) onSendMessage;
+
+  @override
+  State<_LiveUserOverlay> createState() => _LiveUserOverlayState();
+}
+
+class _LiveUserOverlayState extends State<_LiveUserOverlay> {
+  bool _composing = false;
+  bool _sending = false;
+  late final _senderController = TextEditingController(
+    text: widget.initialSender,
+  );
+  final _contentController = TextEditingController();
+
+  @override
+  void dispose() {
+    _senderController.dispose();
+    _contentController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final sender = _senderController.text.trim();
+    final content = _contentController.text.trim();
+    if (sender.isEmpty || content.isEmpty) return;
+    setState(() => _sending = true);
+    final success = await widget.onSendMessage(sender, content);
+    if (!mounted) return;
+    setState(() {
+      _sending = false;
+      if (success) {
+        _composing = false;
+        _contentController.clear();
+      }
+    });
+  }
+
+  void _cancel() {
+    setState(() {
+      _composing = false;
+      _contentController.clear();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
-    if (userName == null || userName!.isEmpty) return const SizedBox.shrink();
+    final userName = widget.userName;
+    if (userName == null || userName.isEmpty) return const SizedBox.shrink();
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 300),
       child: Card(
@@ -643,7 +736,10 @@ class _LiveUserOverlay extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  _ProfileAvatar(imageUrl: profileImageUrl, ended: ended),
+                  _ProfileAvatar(
+                    imageUrl: widget.profileImageUrl,
+                    ended: widget.ended,
+                  ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: RichText(
@@ -657,7 +753,7 @@ class _LiveUserOverlay extends StatelessWidget {
                             style: const TextStyle(fontWeight: FontWeight.bold),
                           ),
                           TextSpan(
-                            text: ended
+                            text: widget.ended
                                 ? "'s LiveTrack session has ended"
                                 : ' is live',
                           ),
@@ -667,21 +763,71 @@ class _LiveUserOverlay extends StatelessWidget {
                   ),
                 ],
               ),
-              if (!ended) ...[
+              if (!widget.ended) ...[
                 const SizedBox(height: 10),
-                ElevatedButton.icon(
-                  onPressed: onSendMessage,
-                  icon: const Icon(Icons.send, size: 18),
-                  label: const Text('Send message'),
-                ),
+                if (_composing) ...[
+                  TextField(
+                    controller: _senderController,
+                    enabled: !_sending,
+                    decoration: const InputDecoration(
+                      labelText: 'Your name',
+                      isDense: true,
+                    ),
+                    textInputAction: TextInputAction.next,
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _contentController,
+                    enabled: !_sending,
+                    decoration: const InputDecoration(
+                      labelText: 'Message',
+                      isDense: true,
+                    ),
+                    minLines: 1,
+                    maxLines: 3,
+                    autofocus: true,
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: (_) => _submit(),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(
+                        onPressed: _sending ? null : _cancel,
+                        child: const Text('Cancel'),
+                      ),
+                      const SizedBox(width: 4),
+                      FilledButton.icon(
+                        onPressed: _sending ? null : _submit,
+                        icon: _sending
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.send, size: 18),
+                        label: const Text('Send'),
+                      ),
+                    ],
+                  ),
+                ] else
+                  ElevatedButton.icon(
+                    onPressed: () => setState(() => _composing = true),
+                    icon: const Icon(Icons.send, size: 18),
+                    label: const Text('Send message'),
+                  ),
               ],
-              if (startTime != null || lastUpdate != null) ...[
+              if (widget.startTime != null || widget.lastUpdate != null) ...[
                 const SizedBox(height: 8),
                 Text(
                   [
-                    if (startTime != null) 'Started ${_formatTime(startTime!)}',
-                    if (lastUpdate != null)
-                      'Updated ${_formatTime(lastUpdate!)}',
+                    if (widget.startTime != null)
+                      'Started ${_formatTime(widget.startTime!)}',
+                    if (widget.lastUpdate != null)
+                      'Updated ${_formatTime(widget.lastUpdate!)}',
                   ].join('  •  '),
                   style: Theme.of(context).textTheme.bodySmall,
                 ),

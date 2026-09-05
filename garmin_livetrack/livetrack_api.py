@@ -6,6 +6,7 @@ Run with:
 
 import copy
 import os
+import queue
 import re
 import threading
 from datetime import datetime, timezone
@@ -93,6 +94,11 @@ class StartTrackingRequest(BaseModel):
     url: str
 
 
+class SendMessageRequest(BaseModel):
+    sender: str
+    content: str
+
+
 class Tracker:
     """One browser worker and isolated state for one LiveTrack share URL."""
 
@@ -115,12 +121,29 @@ class Tracker:
         self._profile_fetched = False
         self.profile_image: Optional[bytes] = None
         self.profile_image_content_type: Optional[str] = None
+        self._wake = threading.Event()
+        self._outbox: "queue.Queue[tuple[str, str, threading.Event, Dict[str, Any]]]" = (
+            queue.Queue()
+        )
 
     def start(self) -> None:
         self.thread.start()
 
     def stop(self) -> None:
         self.stop_requested.set()
+        self._wake.set()
+
+    def send_message(self, sender: str, content: str, timeout: float = 15.0) -> None:
+        if self.state in TERMINAL_STATES:
+            raise RuntimeError("This LiveTrack session has ended.")
+        done = threading.Event()
+        result: Dict[str, Any] = {}
+        self._outbox.put((sender, content, done, result))
+        self._wake.set()
+        if not done.wait(timeout):
+            raise RuntimeError("Timed out waiting to send the message.")
+        if result.get("error"):
+            raise RuntimeError(result["error"])
 
     def request_stop(self) -> bool:
         with self.lock:
@@ -192,6 +215,56 @@ class Tracker:
         if result.get("ok"):
             return result.get("data")
         raise RuntimeError(f"Garmin API returned HTTP {result.get('status')}.")
+
+    def _post_json(self, page, url: str, body: Dict[str, Any]) -> Optional[Any]:
+        with self.lock:
+            csrf_token = self.csrf_token
+        if not csrf_token:
+            raise RuntimeError("Not ready yet: missing Garmin session token.")
+        result = page.evaluate(
+            """async ({url, body, csrfToken}) => {
+                try {
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        cache: 'no-store',
+                        headers: {
+                            'livetrack-csrf-token': csrfToken,
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(body),
+                    });
+                    const text = await response.text();
+                    return {ok: response.ok, status: response.status,
+                            data: text ? JSON.parse(text) : null};
+                } catch (error) {
+                    return {ok: false, status: 0, error: String(error)};
+                }
+            }""",
+            {"url": url, "body": body, "csrfToken": csrf_token},
+        )
+        if result.get("ok"):
+            return result.get("data")
+        raise RuntimeError(f"Garmin API returned HTTP {result.get('status')}.")
+
+    def _send_message(self, page, sender: str, content: str) -> None:
+        with self.lock:
+            session = self.session
+        if not session:
+            raise RuntimeError("Session not ready yet.")
+        unit_id = session.get("unitId")
+        profile_id = (session.get("publisher") or {}).get("connectUserProfileId")
+        if unit_id is None or profile_id is None:
+            raise RuntimeError("Missing unitId/userProfileId for this session.")
+        self._post_json(
+            page,
+            "https://livetrack.garmin.com/api/messages/spectator/text",
+            {
+                "from": sender,
+                "content": content,
+                "unitId": unit_id,
+                "userProfileId": profile_id,
+            },
+        )
 
     def _save_session(self, data: Dict[str, Any]) -> bool:
         session = dict(data)
@@ -295,6 +368,16 @@ class Tracker:
                     with self.lock:
                         self.state = "waiting_for_garmin"
                     while not self.stop_requested.is_set():
+                        while True:
+                            try:
+                                sender, content, done, result = self._outbox.get_nowait()
+                            except queue.Empty:
+                                break
+                            try:
+                                self._send_message(page, sender, content)
+                            except Exception as error:
+                                result["error"] = str(error)
+                            done.set()
                         try:
                             session = self._fetch_json(page, session_url, {"token": self.token})
                             if not isinstance(session, dict):
@@ -333,7 +416,8 @@ class Tracker:
                                 self.error = str(error)
                                 self.state = "error"
                             return
-                        self.stop_requested.wait(POLL_SECONDS)
+                        self._wake.wait(POLL_SECONDS)
+                        self._wake.clear()
                 finally:
                     browser.close()
         except Exception as error:
@@ -449,6 +533,23 @@ def get_profile_image(session_id: str):
             detail="No profile image available.",
         )
     return Response(content=image, media_type=content_type)
+
+
+@app.post("/trackings/{session_id}/message", status_code=status.HTTP_204_NO_CONTENT)
+def send_message(session_id: str, request: SendMessageRequest):
+    sender = request.sender.strip()
+    content = request.content.strip()
+    if not sender or not content:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="sender and content must not be empty.",
+        )
+    tracker = get_tracker_or_404(session_id)
+    try:
+        tracker.send_message(sender, content)
+    except RuntimeError as error:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.delete("/trackings/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
