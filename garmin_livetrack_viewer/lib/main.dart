@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:developer';
 
+import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_vector_tiles/flutter_map_vector_tiles.dart' as vt;
@@ -50,6 +51,9 @@ String _twoDigits(int n) => n.toString().padLeft(2, '0');
 
 String _formatTime(DateTime t) =>
     '${_twoDigits(t.hour)}:${_twoDigits(t.minute)}:${_twoDigits(t.second)}';
+
+String _formatHourMinute(DateTime t) =>
+    '${_twoDigits(t.hour)}:${_twoDigits(t.minute)}';
 
 String _formatDuration(Object? value) {
   if (value is! num) return '';
@@ -124,6 +128,9 @@ class _LiveTrackPageState extends State<LiveTrackPage>
   String _lastToast = '';
   Map<String, dynamic>? _session;
   Map<String, dynamic>? _metaData;
+  List<(DateTime, double)> _heartRateHistory = [];
+  List<(DateTime, double)> _speedHistory = [];
+  List<(DateTime, double)> _elevationHistory = [];
   DateTime? _lastUpdate;
   String? _trackerState;
   vt.Style? _vectorStyle;
@@ -219,6 +226,29 @@ class _LiveTrackPageState extends State<LiveTrackPage>
         ),
       )
       .toList();
+
+  List<(DateTime, double)> _metricSeries(
+    List<Map<String, dynamic>> trackData,
+    String metaKey, {
+    double Function(double)? transform,
+  }) {
+    final series = <(DateTime, double)>[];
+    for (final point in trackData) {
+      final meta = point['metaData'];
+      if (meta is! Map<String, dynamic>) continue;
+      final raw = meta[metaKey];
+      final timestamp = point['timestamp'];
+      if (raw is! num || timestamp is! num) continue;
+      final millis = timestamp >= 1000000000000
+          ? timestamp.toInt()
+          : timestamp.toInt() * 1000;
+      final value = transform != null
+          ? transform(raw.toDouble())
+          : raw.toDouble();
+      series.add((DateTime.fromMillisecondsSinceEpoch(millis), value));
+    }
+    return series;
+  }
 
   String? _resolveSessionId() {
     final idParam = Uri.base.queryParameters['id'];
@@ -327,6 +357,13 @@ class _LiveTrackPageState extends State<LiveTrackPage>
             ? snapshot['session'] as Map<String, dynamic>
             : null;
         _metaData = lastMeta is Map<String, dynamic> ? lastMeta : null;
+        _heartRateHistory = _metricSeries(trackData, 'HEART_RATE');
+        _speedHistory = _metricSeries(
+          trackData,
+          'SPEED',
+          transform: (value) => value * 3.6,
+        );
+        _elevationHistory = _metricSeries(trackData, 'ELEVATION');
         _lastUpdate = lastUpdate;
         _trackerState = trackerState;
       });
@@ -591,6 +628,32 @@ class _LiveTrackPageState extends State<LiveTrackPage>
                     ended: _trackerState == 'ended',
                     initialSender: _lastSenderName,
                     onSendMessage: _sendMessage,
+                    chartSeries: [
+                      if (_heartRateHistory.isNotEmpty)
+                        _ChartSeries(
+                          label: 'Heart rate',
+                          icon: Icons.favorite,
+                          color: Colors.redAccent,
+                          unit: 'bpm',
+                          points: _heartRateHistory,
+                        ),
+                      if (_speedHistory.isNotEmpty)
+                        _ChartSeries(
+                          label: 'Speed',
+                          icon: Icons.speed,
+                          color: Colors.blueAccent,
+                          unit: 'km/h',
+                          points: _speedHistory,
+                        ),
+                      if (_elevationHistory.isNotEmpty)
+                        _ChartSeries(
+                          label: 'Elevation',
+                          icon: Icons.terrain,
+                          color: Colors.teal,
+                          unit: 'm',
+                          points: _elevationHistory,
+                        ),
+                    ],
                   ),
                 ),
                 Positioned(
@@ -679,6 +742,22 @@ class _NotificationButton extends StatelessWidget {
   }
 }
 
+class _ChartSeries {
+  const _ChartSeries({
+    required this.label,
+    required this.icon,
+    required this.color,
+    required this.unit,
+    required this.points,
+  });
+
+  final String label;
+  final IconData icon;
+  final Color color;
+  final String unit;
+  final List<(DateTime, double)> points;
+}
+
 class _LiveUserOverlay extends StatefulWidget {
   const _LiveUserOverlay({
     required this.userName,
@@ -688,6 +767,7 @@ class _LiveUserOverlay extends StatefulWidget {
     this.lastUpdate,
     this.ended = false,
     this.initialSender,
+    this.chartSeries = const [],
   });
 
   final String? userName;
@@ -696,6 +776,7 @@ class _LiveUserOverlay extends StatefulWidget {
   final DateTime? lastUpdate;
   final bool ended;
   final String? initialSender;
+  final List<_ChartSeries> chartSeries;
   final Future<bool> Function(String sender, String content) onSendMessage;
 
   @override
@@ -705,6 +786,8 @@ class _LiveUserOverlay extends StatefulWidget {
 class _LiveUserOverlayState extends State<_LiveUserOverlay> {
   bool _composing = false;
   bool _sending = false;
+  bool _showChart = false;
+  int _selectedMetricIndex = 0;
   late final _senderController = TextEditingController(
     text: widget.initialSender,
   );
@@ -744,8 +827,9 @@ class _LiveUserOverlayState extends State<_LiveUserOverlay> {
   Widget build(BuildContext context) {
     final userName = widget.userName;
     if (userName == null || userName.isEmpty) return const SizedBox.shrink();
+    const cardWidth = 370.0;
     return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 300),
+      constraints: const BoxConstraints(maxWidth: cardWidth),
       child: Card(
         margin: EdgeInsets.zero,
         child: Padding(
@@ -754,35 +838,82 @@ class _LiveUserOverlayState extends State<_LiveUserOverlay> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Row(
-                children: [
-                  _ProfileAvatar(
-                    imageUrl: widget.profileImageUrl,
-                    ended: widget.ended,
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: RichText(
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      text: TextSpan(
-                        style: Theme.of(context).textTheme.bodyMedium,
-                        children: [
-                          TextSpan(
-                            text: userName,
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          TextSpan(
-                            text: widget.ended
-                                ? "'s LiveTrack session has ended"
-                                : ' is live',
-                          ),
-                        ],
+              InkWell(
+                onTap: widget.chartSeries.isNotEmpty
+                    ? () => setState(() => _showChart = !_showChart)
+                    : null,
+                child: Row(
+                  children: [
+                    _ProfileAvatar(
+                      imageUrl: widget.profileImageUrl,
+                      ended: widget.ended,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: RichText(
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        text: TextSpan(
+                          style: Theme.of(context).textTheme.bodyMedium,
+                          children: [
+                            TextSpan(
+                              text: userName,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            TextSpan(
+                              text: widget.ended
+                                  ? "'s LiveTrack session has ended"
+                                  : ' is live',
+                            ),
+                          ],
+                        ),
                       ),
                     ),
-                  ),
-                ],
+                    if (widget.chartSeries.isNotEmpty)
+                      Icon(
+                        _showChart ? Icons.expand_less : Icons.expand_more,
+                        size: 18,
+                      ),
+                  ],
+                ),
               ),
+              if (_showChart && widget.chartSeries.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Builder(
+                  builder: (context) {
+                    final selectedIndex = _selectedMetricIndex.clamp(
+                      0,
+                      widget.chartSeries.length - 1,
+                    );
+                    final selected = widget.chartSeries[selectedIndex];
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _MetricChart(series: selected, height: 160),
+                        const SizedBox(height: 8),
+                        SegmentedButton<int>(
+                          segments: [
+                            for (final (index, series)
+                                in widget.chartSeries.indexed)
+                              ButtonSegment(
+                                value: index,
+                                label: Text(series.label),
+                                icon: Icon(series.icon, size: 16),
+                              ),
+                          ],
+                          selected: {selectedIndex},
+                          showSelectedIcon: false,
+                          onSelectionChanged: (selection) => setState(
+                            () => _selectedMetricIndex = selection.first,
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ],
               if (!widget.ended) ...[
                 const SizedBox(height: 10),
                 if (_composing) ...[
@@ -898,6 +1029,104 @@ class _ProfileAvatar extends StatelessWidget {
             loadingBuilder: (context, child, progress) =>
                 progress == null ? child : Center(child: fallbackIcon),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MetricChart extends StatelessWidget {
+  const _MetricChart({required this.series, this.height = 120});
+
+  final _ChartSeries series;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    final samples = series.points;
+    final start = samples.first.$1;
+    final spots = [
+      for (final sample in samples)
+        FlSpot(sample.$1.difference(start).inSeconds.toDouble(), sample.$2),
+    ];
+    final values = samples.map((sample) => sample.$2);
+    final minY =
+        ((values.reduce((a, b) => a < b ? a : b) - 10) / 10).floorToDouble() *
+        10;
+    final maxY =
+        ((values.reduce((a, b) => a > b ? a : b) + 10) / 10).ceilToDouble() *
+        10;
+    final yInterval = ((maxY - minY) / 3).clamp(10, double.infinity).toDouble();
+    final xInterval = (spots.last.x / 5).clamp(1, double.infinity).toDouble();
+    return SizedBox(
+      height: height,
+      child: LineChart(
+        LineChartData(
+          minY: minY,
+          maxY: maxY,
+          gridData: const FlGridData(show: true, drawVerticalLine: false),
+          borderData: FlBorderData(show: false),
+          titlesData: FlTitlesData(
+            topTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false),
+            ),
+            rightTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false),
+            ),
+            leftTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: 32,
+                interval: yInterval,
+                getTitlesWidget: (value, meta) => Text(
+                  value.toInt().toString(),
+                  style: const TextStyle(fontSize: 10),
+                ),
+              ),
+            ),
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: 20,
+                interval: xInterval,
+                getTitlesWidget: (value, meta) {
+                  final time = start.add(Duration(seconds: value.round()));
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      _formatHourMinute(time),
+                      style: const TextStyle(fontSize: 9),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+          lineTouchData: LineTouchData(
+            touchTooltipData: LineTouchTooltipData(
+              getTooltipItems: (touchedSpots) => touchedSpots
+                  .map(
+                    (spot) => LineTooltipItem(
+                      '${spot.y.toStringAsFixed(0)} ${series.unit}',
+                      const TextStyle(color: Colors.white),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
+          lineBarsData: [
+            LineChartBarData(
+              spots: spots,
+              isCurved: true,
+              color: series.color,
+              barWidth: 2,
+              dotData: const FlDotData(show: false),
+              belowBarData: BarAreaData(
+                show: true,
+                color: series.color.withValues(alpha: 0.15),
+              ),
+            ),
+          ],
         ),
       ),
     );
