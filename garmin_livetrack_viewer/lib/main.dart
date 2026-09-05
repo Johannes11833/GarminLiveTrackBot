@@ -209,6 +209,9 @@ class _LiveTrackPageState extends State<LiveTrackPage>
     return null;
   }
 
+  String? _profileImageUrl(String sessionId) =>
+      _apiUri('/trackings/$sessionId/profile-image').toString();
+
   Future<Map<String, dynamic>?> _getMap(String path) async {
     final response = await http.get(_apiUri(path));
     if (response.statusCode != 200) return null;
@@ -386,6 +389,7 @@ class _LiveTrackPageState extends State<LiveTrackPage>
   @override
   Widget build(BuildContext context) {
     final sessionName = _session?['sessionName']?.toString().trim();
+    final sessionId = _resolveSessionId();
     return Scaffold(
       appBar: AppBar(
         title: Row(
@@ -511,6 +515,9 @@ class _LiveTrackPageState extends State<LiveTrackPage>
                   bottom: 12,
                   child: _LiveUserOverlay(
                     userName: _session?['userDisplayName']?.toString().trim(),
+                    profileImageUrl: sessionId != null
+                        ? _profileImageUrl(sessionId)
+                        : null,
                     startTime: _parseIsoDateTime(_session?['start']),
                     lastUpdate: _lastUpdate,
                     ended: _trackerState == 'ended',
@@ -608,12 +615,14 @@ class _LiveUserOverlay extends StatelessWidget {
   const _LiveUserOverlay({
     required this.userName,
     required this.onSendMessage,
+    this.profileImageUrl,
     this.startTime,
     this.lastUpdate,
     this.ended = false,
   });
 
   final String? userName;
+  final String? profileImageUrl;
   final DateTime? startTime;
   final DateTime? lastUpdate;
   final bool ended;
@@ -634,15 +643,7 @@ class _LiveUserOverlay extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  CircleAvatar(
-                    backgroundColor: ended
-                        ? Theme.of(context).colorScheme.surfaceContainerHighest
-                        : null,
-                    child: Icon(
-                      Icons.directions_bike,
-                      color: ended ? Theme.of(context).disabledColor : null,
-                    ),
-                  ),
+                  _ProfileAvatar(imageUrl: profileImageUrl, ended: ended),
                   const SizedBox(width: 10),
                   Expanded(
                     child: RichText(
@@ -686,6 +687,47 @@ class _LiveUserOverlay extends StatelessWidget {
                 ),
               ],
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ProfileAvatar extends StatelessWidget {
+  const _ProfileAvatar({required this.imageUrl, required this.ended});
+
+  final String? imageUrl;
+  final bool ended;
+
+  static const _diameter = 40.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final backgroundColor = ended
+        ? Theme.of(context).colorScheme.surfaceContainerHighest
+        : Theme.of(context).colorScheme.primaryContainer;
+    final fallbackIcon = Icon(
+      Icons.directions_bike,
+      color: ended ? Theme.of(context).disabledColor : null,
+    );
+    final url = imageUrl;
+    if (url == null) {
+      return CircleAvatar(backgroundColor: backgroundColor, child: fallbackIcon);
+    }
+    return ClipOval(
+      child: SizedBox(
+        width: _diameter,
+        height: _diameter,
+        child: ColoredBox(
+          color: backgroundColor,
+          child: Image.network(
+            url,
+            fit: BoxFit.cover,
+            errorBuilder: (context, error, stackTrace) =>
+                Center(child: fallbackIcon),
+            loadingBuilder: (context, child, progress) =>
+                progress == null ? child : Center(child: fallbackIcon),
           ),
         ),
       ),

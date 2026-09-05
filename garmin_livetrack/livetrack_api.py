@@ -11,6 +11,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+import requests
 from fastapi import FastAPI, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -111,6 +112,9 @@ class Tracker:
         self.csrf_token: Optional[str] = None
         self._start_notified = False
         self._end_notified = False
+        self._profile_fetched = False
+        self.profile_image: Optional[bytes] = None
+        self.profile_image_content_type: Optional[str] = None
 
     def start(self) -> None:
         self.thread.start()
@@ -137,6 +141,7 @@ class Tracker:
                     "session": self.session,
                     "pointCount": len(self.track),
                     "coursePointCount": len(self.course),
+                    "hasProfileImage": self.profile_image is not None,
                 }
             )
 
@@ -210,6 +215,33 @@ class Tracker:
             push.notify(self.session_id, "LiveTrack ended", name)
         return live
 
+    def _fetch_profile_image(self, page, guid: str) -> None:
+        try:
+            profile = self._fetch_json(
+                page, f"https://livetrack.garmin.com/api/user/{guid}/profile", {}
+            )
+        except RuntimeError as error:
+            print(f"[{self.session_id}] profile fetch failed: {error}")
+            return
+        if not isinstance(profile, dict):
+            return
+        image_url = profile.get("profileImageMedium") or profile.get(
+            "profileImageSmall"
+        )
+        if not image_url:
+            return
+        try:
+            response = requests.get(image_url, timeout=10)
+            response.raise_for_status()
+        except requests.RequestException as error:
+            print(f"[{self.session_id}] profile image download failed: {error}")
+            return
+        with self.lock:
+            self.profile_image = response.content
+            self.profile_image_content_type = response.headers.get(
+                "Content-Type", "image/png"
+            )
+
     def _save_track(self, data: Any) -> None:
         raw_points = data if isinstance(data, list) else data.get("trackPoints", [])
         points = [normalize_point(point) for point in raw_points if isinstance(point, dict)]
@@ -271,6 +303,13 @@ class Tracker:
                                 page.wait_for_timeout(1000)
                                 continue
                             live = self._save_session(session)
+                            if not self._profile_fetched:
+                                guid = (session.get("publisher") or {}).get(
+                                    "garminGuid"
+                                )
+                                if guid:
+                                    self._profile_fetched = True
+                                    self._fetch_profile_image(page, guid)
                             with self.lock:
                                 begin = self.track_begin
                             track = self._fetch_json(
@@ -396,6 +435,20 @@ def get_track(session_id: str):
 @app.get("/trackings/{session_id}/course")
 def get_course(session_id: str):
     return get_tracker_or_404(session_id).get_course()
+
+
+@app.get("/trackings/{session_id}/profile-image")
+def get_profile_image(session_id: str):
+    tracker = get_tracker_or_404(session_id)
+    with tracker.lock:
+        image = tracker.profile_image
+        content_type = tracker.profile_image_content_type
+    if not image:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No profile image available.",
+        )
+    return Response(content=image, media_type=content_type)
 
 
 @app.delete("/trackings/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
