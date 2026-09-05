@@ -605,16 +605,6 @@ def unsubscribe(request: UnsubscribeRequest):
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@app.get("/push/subscriptions")
-def list_subscriptions(token: str):
-    if not push.token_valid(token):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid registration token.",
-        )
-    return push.subscriptions()
-
-
 def cli() -> None:
     import uvicorn
 

@@ -123,12 +123,7 @@ https://livetrack.example.com/?id=<session id>&token=<the token>
 The bell icon is only shown when a token is present in the URL. All registered
 devices receive a notification for every session that starts or ends
 ("LiveTrack started" / "LiveTrack ended", with the session name as body).
-Tapping the notification opens the viewer at that session. Registered
-subscriptions can be listed (with the token):
-
-```bash
-curl "https://livetrack.example.com/push/subscriptions?token=<the token>"
-```
+Tapping the notification opens the viewer at that session.
 
 Deploy with HTTPS: service workers and Web Push require a secure context. The
 included `Caddyfile` serves the built viewer and proxies the API

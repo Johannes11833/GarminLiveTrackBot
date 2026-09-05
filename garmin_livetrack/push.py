@@ -153,11 +153,6 @@ def unsubscribe(endpoint: str) -> None:
         _persist_subscriptions()
 
 
-def subscriptions() -> List[Dict[str, Any]]:
-    with _lock:
-        return [dict(sub) for sub in _subscriptions]
-
-
 def notify(session_id: str, title: str, body: str) -> None:
     """Queue a notification for every registered subscription."""
     with _lock:
