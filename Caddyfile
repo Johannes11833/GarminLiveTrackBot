@@ -1,7 +1,5 @@
-# For local testing, Caddy issues a locally-trusted cert for "localhost"
-# automatically. Replace with your real domain for production.
-# HTTPS is required for service workers and Web Push notifications.
-localhost {
+# Shared routing, used by both site blocks below.
+(routes) {
 	encode gzip
 
 	# API routes (same origin as the viewer, so no CORS needed)
@@ -22,4 +20,16 @@ localhost {
 	handle {
 		reverse_proxy garmin-livetrack-viewer:80
 	}
+}
+
+# Local testing: Caddy issues a locally-trusted cert for "localhost"
+# automatically, so https://localhost works out of the box.
+localhost {
+	import routes
+}
+
+# Production via Cloudflare Tunnel: cloudflared terminates HTTPS at
+# Cloudflare's edge and forwards plain HTTP here, so no ACME/cert needed.
+:80 {
+	import routes
 }

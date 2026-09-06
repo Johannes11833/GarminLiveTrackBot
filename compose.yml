@@ -46,6 +46,19 @@ services:
       - garmin-livetrack-api
       - garmin-livetrack-viewer
 
+  # Exposes Caddy to the internet without opening any inbound ports: create a
+  # tunnel in the Cloudflare Zero Trust dashboard (Networks > Tunnels), add a
+  # Public Hostname pointing at http://caddy:80, and put its token in .env as
+  # CLOUDFLARE_TUNNEL_TOKEN.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - caddy
+
 volumes:
   caddy_data:
   caddy_config:

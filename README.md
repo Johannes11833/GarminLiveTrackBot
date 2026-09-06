@@ -144,12 +144,41 @@ tapping it opens the viewer with both parameters already set.
 
 Deploy with HTTPS: service workers and Web Push require a secure context. The
 included `Caddyfile` serves the built viewer and proxies the API
-(`/trackings`, `/push`) on the same origin. Point the Caddyfile domain at your
-server and run:
+(`/trackings`, `/push`) on the same origin.
 
-```bash
-docker compose up -d
+**Option A: Cloudflare Tunnel (recommended, no open inbound ports)**
+
+1. In the Cloudflare Zero Trust dashboard, go to Networks > Tunnels > Create
+   a tunnel (Cloudflared connector), then add a Public Hostname pointing at
+   `http://caddy:80`.
+2. Put the tunnel token in `.env`:
+   ```
+   CLOUDFLARE_TUNNEL_TOKEN = "..."
+   ```
+3. Run:
+   ```bash
+   docker compose up -d
+   ```
+
+Cloudflare terminates HTTPS at its edge and forwards plain HTTP to Caddy
+through the tunnel, so no domain/certificate setup is needed on the server,
+and ports 80/443 don't need to be open on your firewall at all.
+
+**Option B: expose Caddy directly**
+
+Replace the `:80 { import routes }` block in `Caddyfile` with your own
+domain, so Caddy obtains its own Let's Encrypt certificate:
+
 ```
+livetrack.example.com {
+	import routes
+}
+```
+
+Then point that domain's DNS at the server, open ports 80/443, and run
+`docker compose up -d` (without `CLOUDFLARE_TUNNEL_TOKEN` set, the
+`cloudflared` service will just fail to start and restart-loop harmlessly;
+remove it from `compose.yml` if you don't need it).
 
 Notes:
 - On iOS (16.4+), push works only after the app is installed ("Add to Home
@@ -172,4 +201,8 @@ LIVETRACK_API_TOKEN = "change-me-too"
 # optional: where the email listener finds the API
 # (default http://127.0.0.1:8000; compose sets it to the api service)
 LIVETRACK_API_URL = "http://127.0.0.1:8000"
+
+# optional: only needed if using the cloudflared service to expose the app
+# via a Cloudflare Tunnel instead of exposing Caddy directly (see README)
+CLOUDFLARE_TUNNEL_TOKEN = "..."
 ```
