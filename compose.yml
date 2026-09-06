@@ -26,8 +26,7 @@ services:
       - LIVETRACK_API_HOST=0.0.0.0
     volumes:
       - ./garmin-livetrack-data:/app/garmin-livetrack-data
-    ports:
-      - 8000:8000
+
   garmin-livetrack-viewer:
     build:
       context: .

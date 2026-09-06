@@ -62,18 +62,23 @@ poetry run playwright install chromium
 poetry run garmin-livetrack-api
 ```
 
-Start tracking explicitly by posting a LiveTrack URL. Each session has its own
-Playwright worker and can run alongside other sessions:
+Starting and stopping a tracking session requires the shared `LIVETRACK_API_TOKEN`
+(see below):
 
 ```bash
-curl -X POST http://127.0.0.1:8000/trackings -H "Content-Type: application/json" -d '{"url":"https://livetrack.garmin.com/session/<id>/token/<token>"}'
+curl -X POST http://127.0.0.1:8000/trackings \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <the api token>" \
+  -d '{"url":"https://livetrack.garmin.com/session/<id>/token/<token>"}'
 ```
 
-- `GET /trackings` lists all tracking sessions.
+Each session has its own Playwright worker and can run alongside other sessions.
+
+- `GET /trackings` lists all tracking sessions (also requires the API token).
 - `GET /trackings/{session_id}` returns a session's status and counts.
 - `GET /trackings/{session_id}/track` returns accumulated track points.
 - `GET /trackings/{session_id}/course` returns the current planned course.
-- `DELETE /trackings/{session_id}` requests that session stop.
+- `DELETE /trackings/{session_id}` requests that session stop (also requires the API token).
 
 Interactive OpenAPI documentation is available at `http://127.0.0.1:8000/docs`.
 
@@ -147,6 +152,10 @@ LIVETRACK_EMAIL_USERNAME = "email123@gmx.de"
 LIVETRACK_EMAIL_PASSWORD = "ur-password"
 
 LIVETRACK_PUSH_TOKEN = "change-me"
+
+# shared secret required to start/stop tracking sessions (POST/DELETE
+# /trackings); generate one with e.g. `openssl rand -hex 32`
+LIVETRACK_API_TOKEN = "change-me-too"
 
 # optional: where the email listener finds the API
 # (default http://127.0.0.1:8000; compose sets it to the api service)

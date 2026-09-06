@@ -13,6 +13,9 @@ load_dotenv()
 # Base URL of the LiveTrack REST API. Override when the listener runs in a
 # different container than the API, e.g. LIVETRACK_API_URL=http://garmin-livetrack-api:8000
 API_URL = os.getenv("LIVETRACK_API_URL", "http://127.0.0.1:8000")
+# Shared secret proving this is the trusted email listener; must match the
+# API's LIVETRACK_API_TOKEN, otherwise the API rejects /trackings requests.
+API_TOKEN = os.getenv("LIVETRACK_API_TOKEN", "")
 
 
 def start_session(url: str):
@@ -23,6 +26,7 @@ def start_session(url: str):
             response = requests.post(
                 f"{API_URL}/trackings",
                 json={"url": url},
+                headers={"Authorization": f"Bearer {API_TOKEN}"},
                 timeout=15,
             )
             if response.status_code == 201:

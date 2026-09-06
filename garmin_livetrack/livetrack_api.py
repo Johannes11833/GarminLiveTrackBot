@@ -5,6 +5,7 @@ Run with:
 """
 
 import copy
+import hmac
 import os
 import queue
 import re
@@ -13,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import requests
-from fastapi import FastAPI, HTTPException, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from playwright.sync_api import sync_playwright
@@ -25,6 +26,23 @@ TERMINAL_STATES = {"stopped", "ended", "error"}
 URL_RE = re.compile(
     r"session/(?P<session_id>[0-9a-fA-F-]+)/token/(?P<token>[0-9A-Za-z]+)"
 )
+# Shared secret the email listener must present to start/stop tracking
+# sessions, so a random internet caller can't create or kill trackings.
+API_TOKEN = os.getenv("LIVETRACK_API_TOKEN", "")
+
+
+def require_api_token(authorization: str = Header(default="")) -> None:
+    if not API_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="LIVETRACK_API_TOKEN is not configured on the server.",
+        )
+    token = authorization.removeprefix("Bearer ").strip()
+    if not token or not hmac.compare_digest(token, API_TOKEN):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid or missing API token.",
+        )
 
 
 def parse_livetrack_url(url: str):
@@ -483,7 +501,11 @@ def shutdown() -> None:
     push.stop()
 
 
-@app.post("/trackings", status_code=status.HTTP_201_CREATED)
+@app.post(
+    "/trackings",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_api_token)],
+)
 def start_tracking(request: StartTrackingRequest):
     try:
         tracker = manager.start(request.url)
@@ -492,7 +514,7 @@ def start_tracking(request: StartTrackingRequest):
     return tracker.snapshot()
 
 
-@app.get("/trackings")
+@app.get("/trackings", dependencies=[Depends(require_api_token)])
 def list_trackings():
     with manager.lock:
         trackers = list(manager.trackers.values())
@@ -552,7 +574,11 @@ def send_message(session_id: str, request: SendMessageRequest):
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@app.delete("/trackings/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+@app.delete(
+    "/trackings/{session_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_api_token)],
+)
 def stop_tracking(session_id: str):
     try:
         manager.stop(session_id)
