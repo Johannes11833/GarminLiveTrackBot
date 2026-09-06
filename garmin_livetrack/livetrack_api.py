@@ -301,9 +301,9 @@ class Tracker:
         )
         name = str(session.get("sessionName") or self.session_id)
         if live and not started:
-            push.notify(self.session_id, "LiveTrack started", name)
+            push.notify(self.session_id, self.token, "LiveTrack started", name)
         elif not live and not ended:
-            push.notify(self.session_id, "LiveTrack ended", name)
+            push.notify(self.session_id, self.token, "LiveTrack ended", name)
         return live
 
     def _fetch_profile_image(self, page, guid: str) -> None:
@@ -528,24 +528,36 @@ def get_tracker_or_404(session_id: str) -> Tracker:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tracking not found.")
 
 
-@app.get("/trackings/{session_id}")
-def get_tracking(session_id: str):
-    return get_tracker_or_404(session_id).snapshot()
-
-
-@app.get("/trackings/{session_id}/track")
-def get_track(session_id: str):
-    return get_tracker_or_404(session_id).get_track()
-
-
-@app.get("/trackings/{session_id}/course")
-def get_course(session_id: str):
-    return get_tracker_or_404(session_id).get_course()
-
-
-@app.get("/trackings/{session_id}/profile-image")
-def get_profile_image(session_id: str):
+def get_tracker_with_token(session_id: str, token: str) -> Tracker:
+    """Require the Garmin LiveTrack share token, not just the session id, so
+    someone who only guesses/observes the id can't read track/course/photo."""
     tracker = get_tracker_or_404(session_id)
+    if not token or not hmac.compare_digest(token, tracker.token):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid or missing session token.",
+        )
+    return tracker
+
+
+@app.get("/trackings/{session_id}/token/{token}")
+def get_tracking(session_id: str, token: str):
+    return get_tracker_with_token(session_id, token).snapshot()
+
+
+@app.get("/trackings/{session_id}/token/{token}/track")
+def get_track(session_id: str, token: str):
+    return get_tracker_with_token(session_id, token).get_track()
+
+
+@app.get("/trackings/{session_id}/token/{token}/course")
+def get_course(session_id: str, token: str):
+    return get_tracker_with_token(session_id, token).get_course()
+
+
+@app.get("/trackings/{session_id}/token/{token}/profile-image")
+def get_profile_image(session_id: str, token: str):
+    tracker = get_tracker_with_token(session_id, token)
     with tracker.lock:
         image = tracker.profile_image
         content_type = tracker.profile_image_content_type
@@ -557,8 +569,11 @@ def get_profile_image(session_id: str):
     return Response(content=image, media_type=content_type)
 
 
-@app.post("/trackings/{session_id}/message", status_code=status.HTTP_204_NO_CONTENT)
-def send_message(session_id: str, request: SendMessageRequest):
+@app.post(
+    "/trackings/{session_id}/token/{token}/message",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def send_message(session_id: str, token: str, request: SendMessageRequest):
     sender = request.sender.strip()
     content = request.content.strip()
     if not sender or not content:
@@ -566,7 +581,7 @@ def send_message(session_id: str, request: SendMessageRequest):
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="sender and content must not be empty.",
         )
-    tracker = get_tracker_or_404(session_id)
+    tracker = get_tracker_with_token(session_id, token)
     try:
         tracker.send_message(sender, content)
     except RuntimeError as error:

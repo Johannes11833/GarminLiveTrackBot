@@ -21,15 +21,25 @@ self.addEventListener('push', (event) => {
     icon: 'icons/Icon-192.png',
     badge: 'icons/Icon-192.png',
     tag: payload.tag || 'livetrack',
-    data: { sessionId: payload.sessionId || '' },
+    data: {
+      sessionId: payload.sessionId || '',
+      sessionToken: payload.sessionToken || '',
+    },
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const sessionId = (event.notification.data && event.notification.data.sessionId) || '';
-  const target = new URL(sessionId ? '?id=' + sessionId : '.', self.registration.scope);
+  const data = event.notification.data || {};
+  const sessionId = data.sessionId || '';
+  const sessionToken = data.sessionToken || '';
+  let search = '';
+  if (sessionId) {
+    search = '?id=' + encodeURIComponent(sessionId);
+    if (sessionToken) search += '&sessionToken=' + encodeURIComponent(sessionToken);
+  }
+  const target = new URL(search || '.', self.registration.scope);
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
       for (const client of windowClients) {

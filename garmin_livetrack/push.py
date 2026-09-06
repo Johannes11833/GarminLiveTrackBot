@@ -153,21 +153,38 @@ def unsubscribe(endpoint: str) -> None:
         _persist_subscriptions()
 
 
-def notify(session_id: str, title: str, body: str) -> None:
+def notify(session_id: str, session_token: str, title: str, body: str) -> None:
     """Queue a notification for every registered subscription."""
     with _lock:
         subscribers = list(_subscriptions)
     if not subscribers:
         return
-    _queue.put({"session_id": session_id, "title": title, "body": body, "subscribers": subscribers})
+    _queue.put(
+        {
+            "session_id": session_id,
+            "session_token": session_token,
+            "title": title,
+            "body": body,
+            "subscribers": subscribers,
+        }
+    )
 
 
-def _send(session_id: str, subscription: Dict[str, Any], title: str, body: str) -> Optional[bool]:
+def _send(
+    session_id: str, session_token: str, subscription: Dict[str, Any], title: str, body: str
+) -> Optional[bool]:
     """Returns False when the subscription is dead and should be removed."""
     try:
         webpush(
             subscription_info=subscription,
-            data=json.dumps({"title": title, "body": body, "sessionId": session_id}),
+            data=json.dumps(
+                {
+                    "title": title,
+                    "body": body,
+                    "sessionId": session_id,
+                    "sessionToken": session_token,
+                }
+            ),
             vapid_private_key=_private_key,
             vapid_claims={"sub": VAPID_CONTACT_EMAIL},
             timeout=10,
@@ -195,7 +212,13 @@ def _worker() -> None:
         removed: List[str] = []
         for subscription in item["subscribers"]:
             try:
-                result = _send(item["session_id"], subscription, item["title"], item["body"])
+                result = _send(
+                    item["session_id"],
+                    item["session_token"],
+                    subscription,
+                    item["title"],
+                    item["body"],
+                )
             except Exception as error:
                 # Never let an unexpected error kill the worker: deliveries
                 # must continue for the remaining subscriptions.

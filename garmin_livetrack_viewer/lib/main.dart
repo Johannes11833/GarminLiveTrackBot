@@ -256,8 +256,24 @@ class _LiveTrackPageState extends State<LiveTrackPage>
     return null;
   }
 
-  String? _profileImageUrl(String sessionId) =>
-      _apiUri('/trackings/$sessionId/profile-image').toString();
+  // The Garmin LiveTrack share token (not the push-registration token, which
+  // uses the ?token= param). Required by the API's track/course/photo
+  // endpoints so knowing the session id alone isn't enough to read them.
+  String? _resolveSessionToken() {
+    final tokenParam = Uri.base.queryParameters['sessionToken'];
+    if (tokenParam != null && tokenParam.trim().isNotEmpty) {
+      return tokenParam.trim();
+    }
+    return null;
+  }
+
+  String? _profileImageUrl(String sessionId) {
+    final sessionToken = _resolveSessionToken();
+    if (sessionToken == null) return null;
+    return _apiUri(
+      '/trackings/$sessionId/token/${Uri.encodeComponent(sessionToken)}/profile-image',
+    ).toString();
+  }
 
   Future<Map<String, dynamic>?> _getMap(String path) async {
     final response = await http.get(_apiUri(path));
@@ -270,12 +286,15 @@ class _LiveTrackPageState extends State<LiveTrackPage>
 
   Future<bool> _sendMessage(String sender, String content) async {
     final sessionId = _resolveSessionId();
-    if (sessionId == null) return false;
+    final sessionToken = _resolveSessionToken();
+    if (sessionId == null || sessionToken == null) return false;
     _lastSenderName = sender;
     _saveSenderName(sender);
     try {
       final response = await http.post(
-        _apiUri('/trackings/$sessionId/message'),
+        _apiUri(
+          '/trackings/$sessionId/token/${Uri.encodeComponent(sessionToken)}/message',
+        ),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'sender': sender, 'content': content}),
       );
@@ -317,14 +336,22 @@ class _LiveTrackPageState extends State<LiveTrackPage>
         _showToast('No session. Pass ?id=<session id> to the app URL.');
         return;
       }
-      final snapshot = await _getMap('/trackings/$sessionId');
+      final sessionToken = _resolveSessionToken();
+      if (sessionToken == null) {
+        _showToast('Missing session token. Pass ?sessionToken=<token> to the app URL.');
+        return;
+      }
+      final encodedToken = Uri.encodeComponent(sessionToken);
+      final snapshot = await _getMap(
+        '/trackings/$sessionId/token/$encodedToken',
+      );
       if (snapshot == null) {
         _showToast('Tracking $sessionId not found.');
         return;
       }
       final data = await Future.wait([
-        _getList('/trackings/$sessionId/track'),
-        _getList('/trackings/$sessionId/course'),
+        _getList('/trackings/$sessionId/token/$encodedToken/track'),
+        _getList('/trackings/$sessionId/token/$encodedToken/course'),
       ]);
       if (!mounted) return;
       final trackData = data[0].whereType<Map<String, dynamic>>().toList();

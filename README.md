@@ -74,10 +74,19 @@ curl -X POST http://127.0.0.1:8000/trackings \
 Each session has its own Playwright worker and can run alongside other sessions.
 
 - `GET /trackings` lists all tracking sessions (also requires the API token).
-- `GET /trackings/{session_id}` returns a session's status and counts.
-- `GET /trackings/{session_id}/track` returns accumulated track points.
-- `GET /trackings/{session_id}/course` returns the current planned course.
+- `GET /trackings/{session_id}/token/{token}` returns a session's status and counts.
+- `GET /trackings/{session_id}/token/{token}/track` returns accumulated track points.
+- `GET /trackings/{session_id}/token/{token}/course` returns the current planned course.
+- `GET /trackings/{session_id}/token/{token}/profile-image` returns the user's profile photo.
+- `POST /trackings/{session_id}/token/{token}/message` sends a spectator message.
 - `DELETE /trackings/{session_id}` requests that session stop (also requires the API token).
+
+Every per-session read/write endpoint above (except starting/stopping) requires
+the Garmin session's own share token (the `<token>` from the original
+`livetrack.garmin.com/session/<id>/token/<token>` URL) as a path segment,
+mirroring Garmin's own URL shape, so knowing/guessing a session id alone isn't
+enough to read or interact with someone's live location -- the viewer passes
+this automatically from its `?sessionToken=` URL parameter (see below).
 
 Interactive OpenAPI documentation is available at `http://127.0.0.1:8000/docs`.
 
@@ -121,13 +130,17 @@ A visitor subscribes by opening the viewer with the token in the URL and
 tapping the bell icon in the app bar:
 
 ```
-https://livetrack.example.com/?id=<session id>&token=<the token>
+https://livetrack.example.com/?id=<session id>&token=<the push token>&sessionToken=<the garmin token>
 ```
 
-The bell icon is only shown when a token is present in the URL. All registered
-devices receive a notification for every session that starts or ends
-("LiveTrack started" / "LiveTrack ended", with the session name as body).
-Tapping the notification opens the viewer at that session.
+`token` is the push-registration token above; `sessionToken` is the Garmin
+LiveTrack share token, required for the viewer to load anything for that
+session at all (see "LiveTrack REST API") -- without it the app just shows
+"Tracking not found." The bell icon is only shown when a push token is present
+in the URL. All registered devices receive a notification for every session
+that starts or ends ("LiveTrack started" / "LiveTrack ended", with the session
+name as body); the notification carries the session's Garmin token too, so
+tapping it opens the viewer with both parameters already set.
 
 Deploy with HTTPS: service workers and Web Push require a secure context. The
 included `Caddyfile` serves the built viewer and proxies the API
