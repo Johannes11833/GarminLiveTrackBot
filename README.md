@@ -1,16 +1,15 @@
-# Garmin Livetrack Bot
+<h1>Garmin Livetrack Bot</h1>
 
-## Table of Contents
-- [Garmin Livetrack Bot](#garmin-livetrack-bot)
-  - [Table of Contents](#table-of-contents)
-  - [Docker Setup](#docker-setup)
-    - [Docker compose setup](#docker-compose-setup)
-    - [Run livetrack bot w/o a container](#run-livetrack-bot-wo-a-container)
-    - [Extract LiveTrack data](#extract-livetrack-data)
-    - [LiveTrack REST API](#livetrack-rest-api)
-    - [Web viewer \& push notifications](#web-viewer--push-notifications)
-    - [Registration token](#registration-token)
-    - [Example .env file](#example-env-file)
+<h2>Table of Contents</h2>
+
+- [Docker Setup](#docker-setup)
+  - [Docker compose setup](#docker-compose-setup)
+  - [Run livetrack bot w/o a container](#run-livetrack-bot-wo-a-container)
+  - [Extract LiveTrack data](#extract-livetrack-data)
+  - [LiveTrack REST API](#livetrack-rest-api)
+  - [Web viewer \& push notifications](#web-viewer--push-notifications)
+  - [Registration token](#registration-token)
+  - [Example .env file](#example-env-file)
 
 ## Docker Setup
 ### Docker compose setup
