@@ -609,37 +609,41 @@ class _LiveTrackPageState extends State<LiveTrackPage>
                 Positioned(
                   top: 12,
                   left: 12,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (_metaData != null && _metaData!.isNotEmpty)
-                        for (final entry in _metaDataRows(_metaData!)) ...[
-                          Card(
-                            margin: EdgeInsets.zero,
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 6,
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  _metaIcon(entry.$1),
-                                  const SizedBox(width: 6),
-                                  Text(
-                                    entry.$2,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodyMedium
-                                        ?.copyWith(fontWeight: FontWeight.w600),
-                                  ),
-                                ],
+                  right: 12,
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_metaData != null && _metaData!.isNotEmpty)
+                          for (final entry in _metaDataRows(_metaData!)) ...[
+                            Card(
+                              margin: EdgeInsets.zero,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 6,
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    _metaIcon(entry.$1),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      entry.$2,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodyMedium
+                                          ?.copyWith(fontWeight: FontWeight.w600),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 6),
-                        ],
-                    ],
+                            const SizedBox(width: 6),
+                          ],
+                      ],
+                    ),
                   ),
                 ),
                 Positioned(
