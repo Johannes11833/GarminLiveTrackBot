@@ -44,6 +44,10 @@ final buttonIconColor = buttonColor.computeLuminance() < 0.5
     ? Colors.white
     : Colors.black87;
 
+// Width reserved on the right for the top-right FAB column (small FABs are
+// 40dp wide, plus its own 12px inset from the edge, plus a small gap).
+const _fabZoneWidth = 64.0;
+
 // Vector basemap: OpenFreeMap (free, no key).
 const vectorStyleUrl = 'https://tiles.openfreemap.org/styles/liberty';
 
@@ -609,7 +613,9 @@ class _LiveTrackPageState extends State<LiveTrackPage>
                 Positioned(
                   top: 12,
                   left: 12,
-                  right: 12,
+                  // Leave room so this row's chips never scroll/overlap
+                  // underneath the FAB column pinned at top-right.
+                  right: _fabZoneWidth,
                   child: SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
                     child: Row(
@@ -617,26 +623,31 @@ class _LiveTrackPageState extends State<LiveTrackPage>
                       children: [
                         if (_metaData != null && _metaData!.isNotEmpty)
                           for (final entry in _metaDataRows(_metaData!)) ...[
-                            Card(
-                              margin: EdgeInsets.zero,
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 10,
-                                  vertical: 6,
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    _metaIcon(entry.$1),
-                                    const SizedBox(width: 6),
-                                    Text(
-                                      entry.$2,
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodyMedium
-                                          ?.copyWith(fontWeight: FontWeight.w600),
-                                    ),
-                                  ],
+                            Tooltip(
+                              message: entry.$1,
+                              child: Card(
+                                margin: EdgeInsets.zero,
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 6,
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      _metaIcon(entry.$1),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        entry.$2,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodyMedium
+                                            ?.copyWith(
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ),
                             ),
