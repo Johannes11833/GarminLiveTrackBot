@@ -73,6 +73,16 @@ curl -X POST http://127.0.0.1:8000/trackings \
 
 Each session has its own Playwright worker and can run alongside other sessions.
 
+To try the viewer UI without a real Garmin LiveTrack link, enable dummy mode
+(`LIVETRACK_ENABLE_DUMMY_MODE=1` in `.env`) and start a simulated session --
+it walks a synthetic route with fake speed/elevation/heart-rate data for 5
+minutes, then ends itself:
+
+```bash
+curl -X POST http://127.0.0.1:8000/trackings/dummy \
+  -H "Authorization: Bearer <the api token>"
+```
+
 - `GET /trackings` lists all tracking sessions (also requires the API token).
 - `GET /trackings/{session_id}/token/{token}` returns a session's status and counts.
 - `GET /trackings/{session_id}/token/{token}/track` returns accumulated track points.
@@ -201,6 +211,10 @@ LIVETRACK_API_TOKEN = "change-me-too"
 # optional: where the email listener finds the API
 # (default http://127.0.0.1:8000; compose sets it to the api service)
 LIVETRACK_API_URL = "http://127.0.0.1:8000"
+
+# optional: set to "1" to enable POST /trackings/dummy for UI testing
+# without a real Garmin LiveTrack link (off by default)
+LIVETRACK_ENABLE_DUMMY_MODE = "1"
 
 # optional: only needed if using the cloudflared service to expose the app
 # via a Cloudflare Tunnel instead of exposing Caddy directly (see README)
