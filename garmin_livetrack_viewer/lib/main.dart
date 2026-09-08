@@ -689,7 +689,7 @@ class _LiveTrackPageState extends State<LiveTrackPage>
                 ),
                 Positioned(
                   right: 12,
-                  bottom: 12,
+                  top: 12,
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
