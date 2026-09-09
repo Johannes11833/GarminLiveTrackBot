@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:developer';
 
 import 'package:fl_chart/fl_chart.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_vector_tiles/flutter_map_vector_tiles.dart' as vt;
@@ -47,6 +48,10 @@ final buttonIconColor = buttonColor.computeLuminance() < 0.5
 // Width reserved on the right for the top-right FAB column (small FABs are
 // 40dp wide, plus its own 12px inset from the edge, plus a small gap).
 const _fabZoneWidth = 64.0;
+
+// Below this width, the bottom-left overlay becomes a full-width bottom
+// panel instead of a small fixed card (phones / narrow windows).
+const _compactWidthBreakpoint = 600.0;
 
 // Vector basemap: OpenFreeMap (free, no key).
 const vectorStyleUrl = 'https://tiles.openfreemap.org/styles/liberty';
@@ -94,6 +99,19 @@ DateTime? _parseIsoDateTime(Object? value) {
 
 void main() => runApp(const LiveTrackApp());
 
+// Flutter's default web/desktop ScrollBehavior only lets touch/stylus drags
+// pan a scrollable -- mouse-drag is excluded, which breaks click-and-drag
+// scrolling (e.g. the horizontal metric chips) when testing on desktop.
+class _AppScrollBehavior extends MaterialScrollBehavior {
+  @override
+  Set<PointerDeviceKind> get dragDevices => {
+    PointerDeviceKind.touch,
+    PointerDeviceKind.mouse,
+    PointerDeviceKind.stylus,
+    PointerDeviceKind.trackpad,
+  };
+}
+
 class LiveTrackApp extends StatelessWidget {
   const LiveTrackApp({super.key});
 
@@ -101,6 +119,7 @@ class LiveTrackApp extends StatelessWidget {
   Widget build(BuildContext context) => MaterialApp(
     title: 'Garmin LiveTrack Viewer',
     theme: ThemeData(colorSchemeSeed: Colors.teal, useMaterial3: true),
+    scrollBehavior: _AppScrollBehavior(),
     home: const LiveTrackPage(),
   );
 }
@@ -342,7 +361,9 @@ class _LiveTrackPageState extends State<LiveTrackPage>
       }
       final sessionToken = _resolveSessionToken();
       if (sessionToken == null) {
-        _showToast('Missing session token. Pass ?sessionToken=<token> to the app URL.');
+        _showToast(
+          'Missing session token. Pass ?sessionToken=<token> to the app URL.',
+        );
         return;
       }
       final encodedToken = Uri.encodeComponent(sessionToken);
@@ -506,6 +527,44 @@ class _LiveTrackPageState extends State<LiveTrackPage>
   Widget build(BuildContext context) {
     final sessionName = _session?['sessionName']?.toString().trim();
     final sessionId = _resolveSessionId();
+    final isCompact =
+        MediaQuery.sizeOf(context).width < _compactWidthBreakpoint;
+    final userOverlay = _LiveUserOverlay(
+      compact: isCompact,
+      userName: _session?['userDisplayName']?.toString().trim(),
+      profileImageUrl: sessionId != null ? _profileImageUrl(sessionId) : null,
+      startTime: _parseIsoDateTime(_session?['start']),
+      lastUpdate: _lastUpdate,
+      ended: _trackerState == 'ended',
+      initialSender: _lastSenderName,
+      onSendMessage: _sendMessage,
+      chartSeries: [
+        if (_heartRateHistory.isNotEmpty)
+          _ChartSeries(
+            label: 'Heart rate',
+            icon: Icons.favorite,
+            color: Colors.redAccent,
+            unit: 'bpm',
+            points: _heartRateHistory,
+          ),
+        if (_speedHistory.isNotEmpty)
+          _ChartSeries(
+            label: 'Speed',
+            icon: Icons.speed,
+            color: Colors.blueAccent,
+            unit: 'km/h',
+            points: _speedHistory,
+          ),
+        if (_elevationHistory.isNotEmpty)
+          _ChartSeries(
+            label: 'Elevation',
+            icon: Icons.terrain,
+            color: Colors.teal,
+            unit: 'm',
+            points: _elevationHistory,
+          ),
+      ],
+    );
     return Scaffold(
       appBar: AppBar(
         title: Row(
@@ -657,47 +716,10 @@ class _LiveTrackPageState extends State<LiveTrackPage>
                     ),
                   ),
                 ),
-                Positioned(
-                  left: 12,
-                  bottom: 12,
-                  child: _LiveUserOverlay(
-                    userName: _session?['userDisplayName']?.toString().trim(),
-                    profileImageUrl: sessionId != null
-                        ? _profileImageUrl(sessionId)
-                        : null,
-                    startTime: _parseIsoDateTime(_session?['start']),
-                    lastUpdate: _lastUpdate,
-                    ended: _trackerState == 'ended',
-                    initialSender: _lastSenderName,
-                    onSendMessage: _sendMessage,
-                    chartSeries: [
-                      if (_heartRateHistory.isNotEmpty)
-                        _ChartSeries(
-                          label: 'Heart rate',
-                          icon: Icons.favorite,
-                          color: Colors.redAccent,
-                          unit: 'bpm',
-                          points: _heartRateHistory,
-                        ),
-                      if (_speedHistory.isNotEmpty)
-                        _ChartSeries(
-                          label: 'Speed',
-                          icon: Icons.speed,
-                          color: Colors.blueAccent,
-                          unit: 'km/h',
-                          points: _speedHistory,
-                        ),
-                      if (_elevationHistory.isNotEmpty)
-                        _ChartSeries(
-                          label: 'Elevation',
-                          icon: Icons.terrain,
-                          color: Colors.teal,
-                          unit: 'm',
-                          points: _elevationHistory,
-                        ),
-                    ],
-                  ),
-                ),
+                if (isCompact)
+                  Positioned(left: 0, right: 0, bottom: 0, child: userOverlay)
+                else
+                  Positioned(left: 12, bottom: 12, child: userOverlay),
                 Positioned(
                   right: 12,
                   top: 12,
@@ -810,6 +832,7 @@ class _LiveUserOverlay extends StatefulWidget {
     this.ended = false,
     this.initialSender,
     this.chartSeries = const [],
+    this.compact = false,
   });
 
   final String? userName;
@@ -819,13 +842,17 @@ class _LiveUserOverlay extends StatefulWidget {
   final bool ended;
   final String? initialSender;
   final List<_ChartSeries> chartSeries;
+  // On narrow screens (phones), render as a full-width DraggableScrollableSheet
+  // instead of a small fixed-width card.
+  final bool compact;
   final Future<bool> Function(String sender, String content) onSendMessage;
 
   @override
   State<_LiveUserOverlay> createState() => _LiveUserOverlayState();
 }
 
-class _LiveUserOverlayState extends State<_LiveUserOverlay> {
+class _LiveUserOverlayState extends State<_LiveUserOverlay>
+    with SingleTickerProviderStateMixin {
   bool _composing = false;
   bool _sending = false;
   bool _showChart = false;
@@ -835,11 +862,42 @@ class _LiveUserOverlayState extends State<_LiveUserOverlay> {
   );
   final _contentController = TextEditingController();
 
+  // Drives the compact panel's open/closed fraction (0 = just the live
+  // status row, 1 = everything). Dragging updates it live; on release it
+  // always animates the rest of the way to whichever end is closer.
+  late final AnimationController _expandController = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 220),
+  );
+
+  // Vertical drag distance (px) needed to go from fully collapsed to fully
+  // expanded; not tied to actual content height, just how the drag feels.
+  static const _dragExtent = 220.0;
+
   @override
   void dispose() {
+    _expandController.dispose();
     _senderController.dispose();
     _contentController.dispose();
     super.dispose();
+  }
+
+  void _onCompactDragUpdate(DragUpdateDetails details) {
+    _expandController.value -= details.primaryDelta! / _dragExtent;
+  }
+
+  void _onCompactDragEnd(DragEndDetails details) {
+    final velocity = details.primaryVelocity ?? 0;
+    final expand = velocity.abs() > 200
+        ? velocity <
+              0 // flung upward -> open
+        : _expandController.value > 0.5;
+    _expandController.animateTo(expand ? 1 : 0, curve: Curves.easeOut);
+  }
+
+  void _toggleCompact() {
+    final expand = _expandController.value < 0.5;
+    _expandController.animateTo(expand ? 1 : 0, curve: Curves.easeOut);
   }
 
   Future<void> _submit() async {
@@ -869,6 +927,76 @@ class _LiveUserOverlayState extends State<_LiveUserOverlay> {
   Widget build(BuildContext context) {
     final userName = widget.userName;
     if (userName == null || userName.isEmpty) return const SizedBox.shrink();
+
+    if (widget.compact) {
+      final timestamps = _timestampsText(context);
+      return Material(
+        elevation: 4,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _toggleCompact,
+                onVerticalDragUpdate: _onCompactDragUpdate,
+                onVerticalDragEnd: _onCompactDragEnd,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 36,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 8),
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.outlineVariant,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                    _liveStatusHeader(
+                      context,
+                      userName,
+                      trailing: RotationTransition(
+                        turns: Tween(
+                          begin: 0.0,
+                          end: 0.5,
+                        ).animate(_expandController),
+                        child: const Icon(Icons.expand_more, size: 18),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              SizeTransition(
+                sizeFactor: _expandController,
+                alignment: Alignment.topCenter,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (widget.chartSeries.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      _chartSection(context),
+                    ],
+                    ..._messageComposer(),
+                    if (timestamps != null) ...[
+                      const SizedBox(height: 8),
+                      timestamps,
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     const cardWidth = 370.0;
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: cardWidth),
@@ -879,157 +1007,172 @@ class _LiveUserOverlayState extends State<_LiveUserOverlay> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              InkWell(
-                onTap: widget.chartSeries.isNotEmpty
-                    ? () => setState(() => _showChart = !_showChart)
-                    : null,
-                child: Row(
-                  children: [
-                    _ProfileAvatar(
-                      imageUrl: widget.profileImageUrl,
-                      ended: widget.ended,
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: RichText(
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        text: TextSpan(
-                          style: Theme.of(context).textTheme.bodyMedium,
-                          children: [
-                            TextSpan(
-                              text: userName,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            TextSpan(
-                              text: widget.ended
-                                  ? "'s LiveTrack session has ended"
-                                  : ' is live',
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    if (widget.chartSeries.isNotEmpty)
-                      Icon(
-                        _showChart ? Icons.expand_less : Icons.expand_more,
-                        size: 18,
-                      ),
-                  ],
-                ),
-              ),
-              if (_showChart && widget.chartSeries.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Builder(
-                  builder: (context) {
-                    final selectedIndex = _selectedMetricIndex.clamp(
-                      0,
-                      widget.chartSeries.length - 1,
-                    );
-                    final selected = widget.chartSeries[selectedIndex];
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        _MetricChart(series: selected, height: 160),
-                        const SizedBox(height: 8),
-                        SegmentedButton<int>(
-                          segments: [
-                            for (final (index, series)
-                                in widget.chartSeries.indexed)
-                              ButtonSegment(
-                                value: index,
-                                label: Text(series.label),
-                                icon: Icon(series.icon, size: 16),
-                              ),
-                          ],
-                          selected: {selectedIndex},
-                          showSelectedIcon: false,
-                          onSelectionChanged: (selection) => setState(
-                            () => _selectedMetricIndex = selection.first,
-                          ),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-              ],
-              if (!widget.ended) ...[
-                const SizedBox(height: 10),
-                if (_composing) ...[
-                  TextField(
-                    controller: _senderController,
-                    enabled: !_sending,
-                    decoration: const InputDecoration(
-                      labelText: 'Your name',
-                      isDense: true,
-                    ),
-                    textInputAction: TextInputAction.next,
-                  ),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: _contentController,
-                    enabled: !_sending,
-                    decoration: const InputDecoration(
-                      labelText: 'Message',
-                      isDense: true,
-                    ),
-                    minLines: 1,
-                    maxLines: 3,
-                    autofocus: true,
-                    textInputAction: TextInputAction.send,
-                    onSubmitted: (_) => _submit(),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      TextButton(
-                        onPressed: _sending ? null : _cancel,
-                        child: const Text('Cancel'),
-                      ),
-                      const SizedBox(width: 4),
-                      FilledButton.icon(
-                        onPressed: _sending ? null : _submit,
-                        icon: _sending
-                            ? const SizedBox(
-                                width: 14,
-                                height: 14,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Icon(Icons.send, size: 18),
-                        label: const Text('Send'),
-                      ),
-                    ],
-                  ),
-                ] else
-                  ElevatedButton.icon(
-                    onPressed: () => setState(() => _composing = true),
-                    icon: const Icon(Icons.send, size: 18),
-                    label: const Text('Send message'),
-                  ),
-              ],
-              if (widget.startTime != null || widget.lastUpdate != null) ...[
-                const SizedBox(height: 8),
-                Text(
-                  [
-                    if (widget.startTime != null)
-                      'Started ${_formatTime(widget.startTime!)}',
-                    if (widget.lastUpdate != null)
-                      'Updated ${_formatTime(widget.lastUpdate!)}',
-                  ].join('  •  '),
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ],
-            ],
+            children: _desktopContent(context, userName),
           ),
         ),
       ),
     );
+  }
+
+  Widget _liveStatusHeader(
+    BuildContext context,
+    String userName, {
+    VoidCallback? onTap,
+    Widget? trailing,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      child: Row(
+        children: [
+          _ProfileAvatar(imageUrl: widget.profileImageUrl, ended: widget.ended),
+          const SizedBox(width: 10),
+          Expanded(
+            child: RichText(
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              text: TextSpan(
+                style: Theme.of(context).textTheme.bodyMedium,
+                children: [
+                  TextSpan(
+                    text: userName,
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  TextSpan(
+                    text: widget.ended
+                        ? "'s LiveTrack session has ended"
+                        : ' is live',
+                  ),
+                ],
+              ),
+            ),
+          ),
+          ?trailing,
+        ],
+      ),
+    );
+  }
+
+  Widget _chartSection(BuildContext context) {
+    final selectedIndex = _selectedMetricIndex.clamp(
+      0,
+      widget.chartSeries.length - 1,
+    );
+    final selected = widget.chartSeries[selectedIndex];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _MetricChart(series: selected, height: 160),
+        const SizedBox(height: 8),
+        SegmentedButton<int>(
+          segments: [
+            for (final (index, series) in widget.chartSeries.indexed)
+              ButtonSegment(
+                value: index,
+                label: Text(series.label),
+                icon: Icon(series.icon, size: 16),
+              ),
+          ],
+          selected: {selectedIndex},
+          showSelectedIcon: false,
+          onSelectionChanged: (selection) =>
+              setState(() => _selectedMetricIndex = selection.first),
+        ),
+      ],
+    );
+  }
+
+  List<Widget> _messageComposer() {
+    if (widget.ended) return const [];
+    return [
+      const SizedBox(height: 10),
+      if (_composing) ...[
+        TextField(
+          controller: _senderController,
+          enabled: !_sending,
+          decoration: const InputDecoration(
+            labelText: 'Your name',
+            isDense: true,
+          ),
+          textInputAction: TextInputAction.next,
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _contentController,
+          enabled: !_sending,
+          decoration: const InputDecoration(
+            labelText: 'Message',
+            isDense: true,
+          ),
+          minLines: 1,
+          maxLines: 3,
+          autofocus: true,
+          textInputAction: TextInputAction.send,
+          onSubmitted: (_) => _submit(),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            TextButton(
+              onPressed: _sending ? null : _cancel,
+              child: const Text('Cancel'),
+            ),
+            const SizedBox(width: 4),
+            FilledButton.icon(
+              onPressed: _sending ? null : _submit,
+              icon: _sending
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.send, size: 18),
+              label: const Text('Send'),
+            ),
+          ],
+        ),
+      ] else
+        ElevatedButton.icon(
+          onPressed: () => setState(() => _composing = true),
+          icon: const Icon(Icons.send, size: 18),
+          label: const Text('Send message'),
+        ),
+    ];
+  }
+
+  Widget? _timestampsText(BuildContext context) {
+    if (widget.startTime == null && widget.lastUpdate == null) return null;
+    return Text(
+      [
+        if (widget.startTime != null)
+          'Started ${_formatTime(widget.startTime!)}',
+        if (widget.lastUpdate != null)
+          'Updated ${_formatTime(widget.lastUpdate!)}',
+      ].join('  •  '),
+      style: Theme.of(context).textTheme.bodySmall,
+    );
+  }
+
+  List<Widget> _desktopContent(BuildContext context, String userName) {
+    final timestamps = _timestampsText(context);
+    return [
+      _liveStatusHeader(
+        context,
+        userName,
+        onTap: widget.chartSeries.isNotEmpty
+            ? () => setState(() => _showChart = !_showChart)
+            : null,
+        trailing: widget.chartSeries.isNotEmpty
+            ? Icon(_showChart ? Icons.expand_less : Icons.expand_more, size: 18)
+            : null,
+      ),
+      if (_showChart && widget.chartSeries.isNotEmpty) ...[
+        const SizedBox(height: 8),
+        _chartSection(context),
+      ],
+      ..._messageComposer(),
+      if (timestamps != null) ...[const SizedBox(height: 8), timestamps],
+    ];
   }
 }
 
