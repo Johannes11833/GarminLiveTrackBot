@@ -74,13 +74,14 @@ curl -X POST http://127.0.0.1:8000/trackings \
 Each session has its own Playwright worker and can run alongside other sessions.
 
 To try the viewer UI without a real Garmin LiveTrack link, enable dummy mode
-(`LIVETRACK_ENABLE_DUMMY_MODE=1` in `.env`) and start a simulated session --
-it walks a synthetic route with fake speed/elevation/heart-rate data for 5
-minutes, then ends itself:
+(`LIVETRACK_ENABLE_DUMMY_MODE=1` in `.env`). A simulated session then starts
+automatically 5 seconds after the API comes up -- it walks a synthetic route
+with fake speed/elevation/heart-rate data for 5 minutes, then ends itself.
+The API logs the session id and token it started, e.g.:
 
-```bash
-curl -X POST http://127.0.0.1:8000/trackings/dummy \
-  -H "Authorization: Bearer <the api token>"
+```
+[dummy] Started simulated session: id=<id> token=<token>
+[dummy] Open the viewer with: ?id=<id>&sessionToken=<token>
 ```
 
 - `GET /trackings` lists all tracking sessions (also requires the API token).
@@ -212,8 +213,9 @@ LIVETRACK_API_TOKEN = "change-me-too"
 # (default http://127.0.0.1:8000; compose sets it to the api service)
 LIVETRACK_API_URL = "http://127.0.0.1:8000"
 
-# optional: set to "1" to enable POST /trackings/dummy for UI testing
-# without a real Garmin LiveTrack link (off by default)
+# optional: set to "1" to auto-start a simulated tracking session 5s after
+# the API boots, for UI testing without a real Garmin LiveTrack link
+# (off by default)
 LIVETRACK_ENABLE_DUMMY_MODE = "1"
 
 # optional: only needed if using the cloudflared service to expose the app

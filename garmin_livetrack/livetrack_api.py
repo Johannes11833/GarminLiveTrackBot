@@ -6,6 +6,7 @@ Run with:
 
 import hmac
 import os
+import threading
 from typing import Any, Dict
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
@@ -63,6 +64,23 @@ app.add_middleware(
 push.start()
 
 
+def _start_dummy_session() -> None:
+    tracker = manager.start_dummy()
+    print(
+        f"[dummy] Started simulated session: id={tracker.session_id} "
+        f"token={tracker.token}\n"
+        f"[dummy] Open the viewer with: "
+        f"?id={tracker.session_id}&sessionToken={tracker.token}"
+    )
+
+
+@app.on_event("startup")
+def startup() -> None:
+    if DUMMY_MODE_ENABLED:
+        # Delayed so it doesn't hold up the API becoming available.
+        threading.Timer(5.0, _start_dummy_session).start()
+
+
 @app.on_event("shutdown")
 def shutdown() -> None:
     manager.stop_all()
@@ -80,22 +98,6 @@ def start_tracking(request: StartTrackingRequest):
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
     return tracker.snapshot()
-
-
-@app.post(
-    "/trackings/dummy",
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_api_token)],
-)
-def start_dummy_tracking():
-    """Starts a simulated session (synthetic movement/vitals) for exercising
-    the viewer UI without a real Garmin LiveTrack link. Requires
-    LIVETRACK_ENABLE_DUMMY_MODE=1 on the server."""
-    if not DUMMY_MODE_ENABLED:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Dummy mode is disabled."
-        )
-    return manager.start_dummy().snapshot()
 
 
 @app.get("/trackings", dependencies=[Depends(require_api_token)])
