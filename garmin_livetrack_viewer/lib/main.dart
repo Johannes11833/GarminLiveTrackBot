@@ -532,6 +532,7 @@ class _LiveTrackPageState extends State<LiveTrackPage>
     final userOverlay = _LiveUserOverlay(
       compact: isCompact,
       userName: _session?['userDisplayName']?.toString().trim(),
+      sessionName: sessionName,
       profileImageUrl: sessionId != null ? _profileImageUrl(sessionId) : null,
       startTime: _parseIsoDateTime(_session?['start']),
       lastUpdate: _lastUpdate,
@@ -567,22 +568,7 @@ class _LiveTrackPageState extends State<LiveTrackPage>
     );
     return Scaffold(
       appBar: AppBar(
-        title: Row(
-          children: [
-            const Text('Garmin LiveTrack'),
-            if (sessionName != null && sessionName.isNotEmpty) ...[
-              const Text(' - '),
-              Flexible(
-                child: Text(
-                  sessionName,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodyMedium,
-                ),
-              ),
-            ],
-          ],
-        ),
+        title: const Text('Garmin LiveTrack'),
         actions: [
           _NotificationButton(
             service: _pushService,
@@ -827,6 +813,7 @@ class _LiveUserOverlay extends StatefulWidget {
     required this.userName,
     required this.onSendMessage,
     this.profileImageUrl,
+    this.sessionName,
     this.startTime,
     this.lastUpdate,
     this.ended = false,
@@ -837,13 +824,14 @@ class _LiveUserOverlay extends StatefulWidget {
 
   final String? userName;
   final String? profileImageUrl;
+  final String? sessionName;
   final DateTime? startTime;
   final DateTime? lastUpdate;
   final bool ended;
   final String? initialSender;
   final List<_ChartSeries> chartSeries;
-  // On narrow screens (phones), render as a full-width DraggableScrollableSheet
-  // instead of a small fixed-width card.
+  // On narrow screens (phones), render as a full-width draggable bottom
+  // panel instead of a small fixed-width card.
   final bool compact;
   final Future<bool> Function(String sender, String content) onSendMessage;
 
@@ -1027,23 +1015,37 @@ class _LiveUserOverlayState extends State<_LiveUserOverlay>
           _ProfileAvatar(imageUrl: widget.profileImageUrl, ended: widget.ended),
           const SizedBox(width: 10),
           Expanded(
-            child: RichText(
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              text: TextSpan(
-                style: Theme.of(context).textTheme.bodyMedium,
-                children: [
-                  TextSpan(
-                    text: userName,
-                    style: const TextStyle(fontWeight: FontWeight.bold),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                RichText(
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  text: TextSpan(
+                    style: Theme.of(context).textTheme.bodyMedium,
+                    children: [
+                      TextSpan(
+                        text: userName,
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      TextSpan(
+                        text: widget.ended
+                            ? "'s LiveTrack session has ended"
+                            : ' is live',
+                      ),
+                    ],
                   ),
-                  TextSpan(
-                    text: widget.ended
-                        ? "'s LiveTrack session has ended"
-                        : ' is live',
+                ),
+                if (widget.sessionName != null &&
+                    widget.sessionName!.isNotEmpty)
+                  Text(
+                    widget.sessionName!,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
                   ),
-                ],
-              ),
+              ],
             ),
           ),
           ?trailing,
