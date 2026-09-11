@@ -587,6 +587,9 @@ class _LiveTrackPageState extends State<LiveTrackPage>
                   options: MapOptions(
                     initialCenter: const LatLng(0, 0),
                     initialZoom: 2,
+                    interactionOptions: const InteractionOptions(
+                      flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
+                    ),
                     onMapReady: () => _mapReady = true,
                     onMapEvent: (event) {
                       // Only real gestures count as user interaction; layout and
