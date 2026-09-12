@@ -1,22 +1,26 @@
-# Shared routing, used by both site blocks below.
-(routes) {
-	encode gzip
-
-	# API routes (same origin as the viewer, so no CORS needed)
+# API routes (same origin as the viewer, so no CORS needed).
+(api-routes) {
 	handle /push/* {
 		reverse_proxy garmin-livetrack-api:8000
 	}
 	handle /trackings* {
 		reverse_proxy garmin-livetrack-api:8000
 	}
+}
+
+# Interactive API docs -- only imported by the localhost block below, so
+# they're never reachable through the public tunnel.
+(docs-routes) {
 	handle /docs* {
 		reverse_proxy garmin-livetrack-api:8000
 	}
 	handle /openapi.json {
 		reverse_proxy garmin-livetrack-api:8000
 	}
+}
 
-	# Flutter web viewer, built and served by its own container (Dockerfile.viewer)
+# Flutter web viewer, built and served by its own container (Dockerfile.viewer).
+(viewer-routes) {
 	handle {
 		reverse_proxy garmin-livetrack-viewer:80
 	}
@@ -25,11 +29,16 @@
 # Local testing: Caddy issues a locally-trusted cert for "localhost"
 # automatically, so https://localhost works out of the box.
 localhost {
-	import routes
+	encode gzip
+	import api-routes
+	import docs-routes
+	import viewer-routes
 }
 
 # Production via Cloudflare Tunnel: cloudflared terminates HTTPS at
 # Cloudflare's edge and forwards plain HTTP here, so no ACME/cert needed.
 :80 {
-	import routes
+	encode gzip
+	import api-routes
+	import viewer-routes
 }

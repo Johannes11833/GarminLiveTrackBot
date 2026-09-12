@@ -26,10 +26,14 @@ RUN flutter pub get
 COPY garmin_livetrack_viewer/ ./
 # API_BASE_URL left empty: the viewer calls the same origin as the page,
 # which Caddy reverse-proxies to the API (see Caddyfile).
-RUN flutter build web --release
+# --wasm compiles to WebAssembly (Skwasm renderer) per Flutter's own
+# recommendation -- notably faster map rendering on mobile than the JS/
+# CanvasKit fallback. flutter_bootstrap.js auto-falls back to JS on browsers
+# without WasmGC support.
+RUN flutter build web --release --wasm
 
 
-FROM nginx:1.27-alpine AS runtime
+FROM nginx:alpine AS runtime
 
 COPY --from=builder /app/build/web /usr/share/nginx/html
 COPY garmin_livetrack_viewer/nginx.conf /etc/nginx/conf.d/default.conf
