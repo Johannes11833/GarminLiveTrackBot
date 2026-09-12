@@ -47,16 +47,16 @@ class DummyTracker(Tracker):
 
     def _run(self) -> None:
         with self.lock:
-            self.state = "waiting_for_garmin"
+            self._mark_state("waiting_for_garmin")
         self.stop_requested.wait(1)
         if self.stop_requested.is_set():
             with self.lock:
-                self.state = "stopped"
+                self._mark_state("stopped")
             return
 
         self._save_session(self._session_payload(live=True))
         with self.lock:
-            self.state = "running"
+            self._mark_state("running")
 
         lat, lon = self.START_LAT, self.START_LON
         heading = random.uniform(0, 360)
@@ -95,8 +95,8 @@ class DummyTracker(Tracker):
         self._drain_outbox(None)
         with self.lock:
             if self.stop_requested.is_set():
-                self.state = "stopped"
+                self._mark_state("stopped")
                 return
         self._save_session(self._session_payload(live=False))
         with self.lock:
-            self.state = "ended"
+            self._mark_state("ended")

@@ -92,6 +92,14 @@ The API logs the session id and token it started, e.g.:
 - `POST /trackings/{session_id}/token/{token}/message` sends a spectator message.
 - `DELETE /trackings/{session_id}` requests that session stop (also requires the API token).
 
+Trackers live in memory only (nothing persists across a restart) and are
+swept periodically so the process doesn't accumulate them forever: a
+finished session (stopped/ended/error) is dropped after
+`LIVETRACK_TRACKER_RETENTION_SECONDS` (default 1 day); a tracker still
+running past `LIVETRACK_TRACKER_MAX_AGE_SECONDS` (default 2 days) is force-
+stopped and dropped as a safety net against a stuck worker. The sweep itself
+runs every `LIVETRACK_TRACKER_CLEANUP_INTERVAL_SECONDS` (default 15 minutes).
+
 Every per-session read/write endpoint above (except starting/stopping) requires
 the Garmin session's own share token (the `<token>` from the original
 `livetrack.garmin.com/session/<id>/token/<token>` URL) as a path segment,
@@ -217,6 +225,12 @@ LIVETRACK_API_URL = "http://127.0.0.1:8000"
 # the API boots, for UI testing without a real Garmin LiveTrack link
 # (off by default)
 LIVETRACK_ENABLE_DUMMY_MODE = "1"
+
+# optional: tracker cleanup sweep (see "LiveTrack REST API" above for what
+# each one does); defaults shown here
+LIVETRACK_TRACKER_CLEANUP_INTERVAL_SECONDS = "900"
+LIVETRACK_TRACKER_RETENTION_SECONDS = "86400"
+LIVETRACK_TRACKER_MAX_AGE_SECONDS = "172800"
 
 # optional: only needed if using the cloudflared service to expose the app
 # via a Cloudflare Tunnel instead of exposing Caddy directly (see README)

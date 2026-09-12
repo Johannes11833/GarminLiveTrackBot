@@ -3,6 +3,7 @@ URL, plus TrackerManager for keeping track of all active sessions.
 """
 
 import copy
+import os
 import queue
 import re
 import threading
@@ -19,6 +20,14 @@ TERMINAL_STATES = {"stopped", "ended", "error"}
 URL_RE = re.compile(
     r"session/(?P<session_id>[0-9a-fA-F-]+)/token/(?P<token>[0-9A-Za-z]+)"
 )
+# How often the cleanup sweep runs.
+CLEANUP_INTERVAL_SECONDS = int(os.getenv("LIVETRACK_TRACKER_CLEANUP_INTERVAL_SECONDS", 15 * 60))
+# How long a finished (stopped/ended/error) tracker stays viewable before
+# being dropped.
+TRACKER_RETENTION_SECONDS = int(os.getenv("LIVETRACK_TRACKER_RETENTION_SECONDS", 24 * 60 * 60))
+# Safety net for a tracker stuck running (e.g. a hung Playwright worker):
+# force-stop and drop it after this long regardless of state.
+TRACKER_MAX_AGE_SECONDS = int(os.getenv("LIVETRACK_TRACKER_MAX_AGE_SECONDS", 2 * 24 * 60 * 60))
 
 
 def parse_livetrack_url(url: str):
@@ -94,6 +103,8 @@ class Tracker:
         self.stop_requested = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.state = "starting"
+        self.started_at = datetime.now(timezone.utc)
+        self.ended_at: Optional[datetime] = None
         self.error: Optional[str] = None
         self.session: Optional[Dict[str, Any]] = None
         self.track: List[Dict[str, Any]] = []
@@ -110,6 +121,13 @@ class Tracker:
         self._outbox: "queue.Queue[tuple[str, str, threading.Event, Dict[str, Any]]]" = (
             queue.Queue()
         )
+
+    def _mark_state(self, state: str) -> None:
+        """Sets self.state (and self.ended_at, once, if now terminal).
+        Caller must already hold self.lock."""
+        self.state = state
+        if state in TERMINAL_STATES and self.ended_at is None:
+            self.ended_at = datetime.now(timezone.utc)
 
     def start(self) -> None:
         self.thread.start()
@@ -146,7 +164,7 @@ class Tracker:
         with self.lock:
             if self.state in TERMINAL_STATES | {"stopping"}:
                 return False
-            self.state = "stopping"
+            self._mark_state("stopping")
         self.stop()
         return True
 
@@ -362,7 +380,7 @@ class Tracker:
                     page.on("request", self._capture_csrf_token)
                     page.goto(self.url, wait_until="domcontentloaded", timeout=30000)
                     with self.lock:
-                        self.state = "waiting_for_garmin"
+                        self._mark_state("waiting_for_garmin")
                     while not self.stop_requested.is_set():
                         self._drain_outbox(page)
                         try:
@@ -394,14 +412,14 @@ class Tracker:
                                 self._save_course(course)
                             if not live:
                                 with self.lock:
-                                    self.state = "ended"
+                                    self._mark_state("ended")
                                 return
                             with self.lock:
-                                self.state = "running"
+                                self._mark_state("running")
                         except RuntimeError as error:
                             with self.lock:
                                 self.error = str(error)
-                                self.state = "error"
+                                self._mark_state("error")
                             return
                         self._wake.wait(POLL_SECONDS)
                         self._wake.clear()
@@ -410,16 +428,18 @@ class Tracker:
         except Exception as error:
             with self.lock:
                 self.error = str(error)
-                self.state = "error"
+                self._mark_state("error")
             return
         with self.lock:
-            self.state = "stopped"
+            self._mark_state("stopped")
 
 
 class TrackerManager:
     def __init__(self):
         self.lock = threading.Lock()
         self.trackers: Dict[str, Tracker] = {}
+        self._cleanup_stop = threading.Event()
+        self._cleanup_thread: Optional[threading.Thread] = None
 
     def start(self, url: str) -> Tracker:
         tracker = Tracker(url)
@@ -460,3 +480,57 @@ class TrackerManager:
             trackers = list(self.trackers.values())
         for tracker in trackers:
             tracker.stop()
+
+    def start_cleanup(self) -> None:
+        """Periodically drops finished trackers (after TRACKER_RETENTION_SECONDS)
+        and force-stops/drops anything stuck running too long
+        (TRACKER_MAX_AGE_SECONDS), so memory doesn't grow unbounded."""
+        if self._cleanup_thread is not None:
+            return
+        self._cleanup_thread = threading.Thread(
+            target=self._cleanup_loop, daemon=True, name="tracker-cleanup"
+        )
+        self._cleanup_thread.start()
+
+    def stop_cleanup(self) -> None:
+        self._cleanup_stop.set()
+
+    def _cleanup_loop(self) -> None:
+        while not self._cleanup_stop.wait(CLEANUP_INTERVAL_SECONDS):
+            try:
+                self._cleanup_once()
+            except Exception as error:
+                print(f"Tracker cleanup sweep failed: {error}")
+
+    def _cleanup_once(self) -> None:
+        now = datetime.now(timezone.utc)
+        with self.lock:
+            trackers = list(self.trackers.items())
+
+        to_drop: List[str] = []
+        for session_id, tracker in trackers:
+            with tracker.lock:
+                state = tracker.state
+                started_at = tracker.started_at
+                ended_at = tracker.ended_at
+
+            if state in TERMINAL_STATES:
+                if (
+                    ended_at is not None
+                    and (now - ended_at).total_seconds() > TRACKER_RETENTION_SECONDS
+                ):
+                    to_drop.append(session_id)
+            elif (now - started_at).total_seconds() > TRACKER_MAX_AGE_SECONDS:
+                print(
+                    f"[{session_id}] tracker exceeded max age "
+                    f"({TRACKER_MAX_AGE_SECONDS}s) while still '{state}'; stopping it."
+                )
+                tracker.stop()
+                to_drop.append(session_id)
+
+        if not to_drop:
+            return
+        with self.lock:
+            for session_id in to_drop:
+                self.trackers.pop(session_id, None)
+        print(f"Cleanup: dropped {len(to_drop)} tracker(s): {', '.join(to_drop)}")

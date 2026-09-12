@@ -62,6 +62,7 @@ app.add_middleware(
 )
 
 push.start()
+manager.start_cleanup()
 
 
 def _start_dummy_session() -> None:
@@ -83,6 +84,7 @@ def startup() -> None:
 
 @app.on_event("shutdown")
 def shutdown() -> None:
+    manager.stop_cleanup()
     manager.stop_all()
     push.stop()
 
