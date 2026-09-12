@@ -19,6 +19,7 @@ import 'push_service.dart';
 const apiBaseUrl = String.fromEnvironment('API_BASE_URL');
 
 const _senderNameStorageKey = 'livetrack_sender_name';
+const _pushTokenStorageKey = 'livetrack_push_token';
 
 String? _loadSavedSenderName() {
   try {
@@ -31,6 +32,20 @@ String? _loadSavedSenderName() {
 void _saveSenderName(String name) {
   try {
     web.window.localStorage.setItem(_senderNameStorageKey, name);
+  } catch (_) {}
+}
+
+String? _loadSavedPushToken() {
+  try {
+    return web.window.localStorage.getItem(_pushTokenStorageKey);
+  } catch (_) {
+    return null;
+  }
+}
+
+void _savePushToken(String token) {
+  try {
+    web.window.localStorage.setItem(_pushTokenStorageKey, token);
   } catch (_) {}
 }
 
@@ -175,12 +190,69 @@ class _LiveTrackPageState extends State<LiveTrackPage>
     _initPush();
   }
 
-  void _initPush() {
-    final token = Uri.base.queryParameters['token'];
-    if (token == null || token.trim().isEmpty) return;
-    final service = PushService(apiBaseUrl: apiBaseUrl, token: token.trim());
-    _pushService = service..addListener(_onPushChanged);
+  PushService _createPushService(String token) {
+    final service = PushService(apiBaseUrl: apiBaseUrl, token: token);
+    service.addListener(_onPushChanged);
     service.init();
+    return service;
+  }
+
+  void _initPush() {
+    final urlToken = Uri.base.queryParameters['token']?.trim();
+    // iOS always launches an installed ("Add to Home Screen") PWA at the
+    // manifest's static start_url, dropping whatever query string was in
+    // the browser tab when it was installed -- so the token saved from an
+    // earlier visit with ?token=... in the URL is the only way to still
+    // show the bell icon once launched from the home screen. That save
+    // itself relies on localStorage, which iOS does NOT share between a
+    // Safari tab and the standalone app installed from it, so this only
+    // covers platforms where storage is shared (desktop, Android); iOS
+    // falls through to the manual-entry prompt in _promptForPushToken.
+    final token = (urlToken != null && urlToken.isNotEmpty)
+        ? urlToken
+        : _loadSavedPushToken();
+    if (token == null || token.isEmpty) return;
+    if (urlToken != null && urlToken.isNotEmpty) _savePushToken(urlToken);
+    _pushService = _createPushService(token);
+  }
+
+  void _handleNotificationTap() {
+    if (_pushService == null) {
+      _promptForPushToken();
+    } else {
+      _enableNotifications();
+    }
+  }
+
+  Future<void> _promptForPushToken() async {
+    final controller = TextEditingController();
+    final token = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Enter registration token'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Registration token'),
+          onSubmitted: (value) => Navigator.of(context).pop(value.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(controller.text.trim()),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (!mounted || token == null || token.isEmpty) return;
+    _savePushToken(token);
+    setState(() => _pushService = _createPushService(token));
+    await _enableNotifications();
   }
 
   void _onPushChanged() {
@@ -191,10 +263,7 @@ class _LiveTrackPageState extends State<LiveTrackPage>
 
   Future<void> _enableNotifications() async {
     final service = _pushService;
-    if (service == null) {
-      _showToast('No registration token. Pass ?token=<token> to the app URL.');
-      return;
-    }
+    if (service == null) return;
     await service.enable();
     switch (service.status) {
       case PushStatus.enabled:
@@ -568,11 +637,11 @@ class _LiveTrackPageState extends State<LiveTrackPage>
     );
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Garmin LiveTrack'),
+        title: const Text('Garmin LiveTrack v2'),
         actions: [
           _NotificationButton(
             service: _pushService,
-            onPressed: _enableNotifications,
+            onPressed: _handleNotificationTap,
           ),
           IconButton(onPressed: _refresh, icon: const Icon(Icons.refresh)),
         ],
@@ -761,11 +830,20 @@ class _NotificationButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (service == null) return const SizedBox.shrink();
+    final service = this.service;
+    if (service == null) {
+      // No token known yet (fresh install, e.g. iOS storage isolation) --
+      // still show the bell so there's something to tap to enter one.
+      return IconButton(
+        icon: const Icon(Icons.notifications_none),
+        tooltip: 'Enable notifications',
+        onPressed: onPressed,
+      );
+    }
     return ListenableBuilder(
-      listenable: service!,
+      listenable: service,
       builder: (context, _) {
-        final status = service!.status;
+        final status = service.status;
         final (icon, tooltip) = switch (status) {
           PushStatus.enabled => (
             Icons.notifications_active,
@@ -784,7 +862,7 @@ class _NotificationButton extends StatelessWidget {
             'Notifications unavailable',
           ),
         };
-        final enabled = status != PushStatus.enabled && !service!.busy;
+        final enabled = status != PushStatus.enabled && !service.busy;
         return IconButton(
           icon: Icon(icon),
           tooltip: tooltip,
