@@ -20,6 +20,8 @@ const apiBaseUrl = String.fromEnvironment('API_BASE_URL');
 
 const _senderNameStorageKey = 'livetrack_sender_name';
 const _pushTokenStorageKey = 'livetrack_push_token';
+const _lastSessionIdStorageKey = 'livetrack_last_session_id';
+const _lastSessionTokenStorageKey = 'livetrack_last_session_token';
 
 String? _loadSavedSenderName() {
   try {
@@ -46,6 +48,34 @@ String? _loadSavedPushToken() {
 void _savePushToken(String token) {
   try {
     web.window.localStorage.setItem(_pushTokenStorageKey, token);
+  } catch (_) {}
+}
+
+String? _loadSavedSessionId() {
+  try {
+    return web.window.localStorage.getItem(_lastSessionIdStorageKey);
+  } catch (_) {
+    return null;
+  }
+}
+
+void _saveSessionId(String id) {
+  try {
+    web.window.localStorage.setItem(_lastSessionIdStorageKey, id);
+  } catch (_) {}
+}
+
+String? _loadSavedSessionToken() {
+  try {
+    return web.window.localStorage.getItem(_lastSessionTokenStorageKey);
+  } catch (_) {
+    return null;
+  }
+}
+
+void _saveSessionToken(String token) {
+  try {
+    web.window.localStorage.setItem(_lastSessionTokenStorageKey, token);
   } catch (_) {}
 }
 
@@ -342,21 +372,29 @@ class _LiveTrackPageState extends State<LiveTrackPage>
     return series;
   }
 
+  // Falls back to the last id/token seen (from a previous ?id=/?sessionToken=
+  // in the URL, e.g. from tapping a notification) so reopening the app with
+  // neither in the URL -- closing and relaunching, or iOS's installed-PWA
+  // start_url dropping any query string -- still shows that last session.
   String? _resolveSessionId() {
-    final idParam = Uri.base.queryParameters['id'];
-    if (idParam != null && idParam.trim().isNotEmpty) return idParam.trim();
-    return null;
+    final idParam = Uri.base.queryParameters['id']?.trim();
+    if (idParam != null && idParam.isNotEmpty) {
+      _saveSessionId(idParam);
+      return idParam;
+    }
+    return _loadSavedSessionId();
   }
 
   // The Garmin LiveTrack share token (not the push-registration token, which
   // uses the ?token= param). Required by the API's track/course/photo
   // endpoints so knowing the session id alone isn't enough to read them.
   String? _resolveSessionToken() {
-    final tokenParam = Uri.base.queryParameters['sessionToken'];
-    if (tokenParam != null && tokenParam.trim().isNotEmpty) {
-      return tokenParam.trim();
+    final tokenParam = Uri.base.queryParameters['sessionToken']?.trim();
+    if (tokenParam != null && tokenParam.isNotEmpty) {
+      _saveSessionToken(tokenParam);
+      return tokenParam;
     }
-    return null;
+    return _loadSavedSessionToken();
   }
 
   String? _profileImageUrl(String sessionId) {
@@ -415,7 +453,7 @@ class _LiveTrackPageState extends State<LiveTrackPage>
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
-        SnackBar(content: Text(message), duration: const Duration(days: 1)),
+        SnackBar(content: Text(message), duration: const Duration(seconds: 7)),
       );
   }
 
@@ -637,7 +675,7 @@ class _LiveTrackPageState extends State<LiveTrackPage>
     );
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Garmin LiveTrack v2'),
+        title: const Text('Garmin LiveTrack'),
         actions: [
           _NotificationButton(
             service: _pushService,
