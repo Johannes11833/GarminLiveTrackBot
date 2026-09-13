@@ -9,6 +9,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_vector_tiles/flutter_map_vector_tiles.dart' as vt;
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:web/web.dart' as web;
 
 import 'push_service.dart';
@@ -153,7 +154,6 @@ class _AppScrollBehavior extends MaterialScrollBehavior {
     PointerDeviceKind.touch,
     PointerDeviceKind.mouse,
     PointerDeviceKind.stylus,
-    PointerDeviceKind.trackpad,
   };
 }
 
@@ -203,6 +203,7 @@ class _LiveTrackPageState extends State<LiveTrackPage>
   String? _trackerState;
   vt.Style? _vectorStyle;
   PushService? _pushService;
+  String _appVersion = '';
 
   Uri _apiUri(String path) {
     if (apiBaseUrl.isNotEmpty) return Uri.parse('$apiBaseUrl$path');
@@ -216,6 +217,7 @@ class _LiveTrackPageState extends State<LiveTrackPage>
     // for toasts (e.g. when no ?id= is provided).
     WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
     _loadVectorStyle();
+    _loadAppVersion();
     _timer = Timer.periodic(const Duration(seconds: 5), (_) => _refresh());
     _initPush();
   }
@@ -320,6 +322,12 @@ class _LiveTrackPageState extends State<LiveTrackPage>
     } catch (error) {
       log('Failed to load vector style: $error');
     }
+  }
+
+  Future<void> _loadAppVersion() async {
+    final info = await PackageInfo.fromPlatform();
+    if (!mounted) return;
+    setState(() => _appVersion = info.version);
   }
 
   @override
@@ -849,6 +857,19 @@ class _LiveTrackPageState extends State<LiveTrackPage>
                         child: const Icon(Icons.remove),
                       ),
                     ],
+                  ),
+                ),
+                Positioned(
+                  right: 4,
+                  bottom: 2,
+                  child: IgnorePointer(
+                    child: Text(
+                      'v$_appVersion',
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurface
+                            .withValues(alpha: 0.4),
+                      ),
+                    ),
                   ),
                 ),
               ],
