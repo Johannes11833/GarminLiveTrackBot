@@ -26,10 +26,10 @@ RUN pip install poetry==1.6.1
 # (garmin-livetrack-email-listener, garmin-livetrack-api) get written into
 # the venv.
 COPY pyproject.toml poetry.lock ./
-RUN poetry install --no-root && rm -rf $POETRY_CACHE_DIR
+RUN poetry install --no-root --with api && rm -rf $POETRY_CACHE_DIR
 
 COPY garmin_livetrack /app/garmin_livetrack
-RUN poetry install && rm -rf $POETRY_CACHE_DIR
+RUN poetry install --with api && rm -rf $POETRY_CACHE_DIR
 
 
 FROM base AS runtime

@@ -11,6 +11,14 @@ imapclient = "^3.1.0"
 dotenv = "^0.9.9"
 requests = "^2.32.5"
 rich = "^14.2.0"
+
+# Only pulled in by the API/tracker side (Playwright, FastAPI, push). The
+# email listener never imports any of these, so its image installs without
+# this group and can stay on Alpine -- Playwright ships no musllinux wheels.
+[tool.poetry.group.api]
+optional = true
+
+[tool.poetry.group.api.dependencies]
 qrcode = "^8.2"
 playwright = "^1.55"
 # greenlet 3.2 has no CPython 3.9 Windows wheel; keep Poetry installs binary-only.
