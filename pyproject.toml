@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "garmin_livetrack"
-version = "0.1.0"
+version = "1.0.0"
 description = ""
 authors = ["Johannes <24914225+Johannes11833@users.noreply.github.com>"]
 # readme = "README.md"
