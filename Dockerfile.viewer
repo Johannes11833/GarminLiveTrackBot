@@ -1,4 +1,8 @@
-FROM debian:bookworm-slim AS builder
+# Flutter's official Linux SDK archive is x86_64-only (no arm64 build), but
+# the web build it produces is architecture-independent static assets. Force
+# this stage to always run natively on the build machine's platform -- even
+# when cross-building for linux/arm64 -- so it's never emulated as arm64.
+FROM --platform=$BUILDPLATFORM debian:bookworm-slim AS builder
 
 # Pin to the exact Flutter release this project's pubspec.yaml was written
 # against (sdk: ^3.13.0). Third-party prebuilt Flutter images (e.g.
