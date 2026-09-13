@@ -5,6 +5,26 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Flutter",
+            "type": "dart",
+            "request": "launch",
+            "program": "garmin_livetrack_viewer/lib/main.dart",
+            "deviceId": "chrome",
+            "toolArgs": [
+                "--wasm"
+            ]
+        },
+        {
+            "name": "Flutter (local API)",
+            "type": "dart",
+            "request": "launch",
+            "program": "garmin_livetrack_viewer/lib/main.dart",
+            "deviceId": "chrome",
+            "args": [
+                "--dart-define=API_BASE_URL=http://127.0.0.1:8000"
+            ]
+        },
+        {
             "name": "Python Debugger: main.py",
             "type": "debugpy",
             "request": "launch",

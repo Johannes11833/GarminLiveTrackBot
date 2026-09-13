@@ -3,18 +3,33 @@ name = "garmin_livetrack"
 version = "0.1.0"
 description = ""
 authors = ["Johannes <24914225+Johannes11833@users.noreply.github.com>"]
-# readme = "README.md"
+# readme = "README.md" 
 
 [tool.poetry.dependencies]
-python = "^3.9"
+python = "^3.10"
 imapclient = "^3.1.0"
 dotenv = "^0.9.9"
 requests = "^2.32.5"
 rich = "^14.2.0"
-qrcode = "^7.4"
+
+# Only pulled in by the API/tracker side (Playwright, FastAPI, push). The
+# email listener never imports any of these, so its image installs without
+# this group and can stay on Alpine -- Playwright ships no musllinux wheels.
+[tool.poetry.group.api]
+optional = true
+
+[tool.poetry.group.api.dependencies]
+qrcode = "^8.2"
+playwright = "^1.55"
+# greenlet 3.2 has no CPython 3.9 Windows wheel; keep Poetry installs binary-only.
+greenlet = "^3.5.5"
+fastapi = "^0.141.1"
+uvicorn = {version = "^0.34.0", extras = ["standard"]}
+pywebpush = "^2.0.0"
 
 [tool.poetry.scripts]
-garmin-livetrack = "garmin_livetrack.main:cli"
+garmin-livetrack-email-listener = "garmin_livetrack.main:cli"
+garmin-livetrack-api = "garmin_livetrack.livetrack_api:cli"
 
 [build-system]
 requires = ["poetry-core"]

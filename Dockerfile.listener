@@ -1,0 +1,41 @@
+FROM python:3.13-alpine AS base
+
+ENV VIRTUAL_ENV=/app/.venv \
+    PATH="/app/.venv/bin:$PATH"
+
+
+FROM base AS builder
+
+ENV POETRY_NO_INTERACTION=1 \
+    POETRY_VIRTUALENVS_IN_PROJECT=1 \
+    POETRY_VIRTUALENVS_CREATE=1 \
+    POETRY_CACHE_DIR=/tmp/poetry_cache
+
+WORKDIR /app
+
+# Install Poetry
+RUN pip install poetry==1.6.1
+
+# Install dependencies first so this layer stays cached across source
+# changes, then install the project itself so its console script
+# (garmin-livetrack-email-listener) gets written into the venv. The "api"
+# group (Playwright, FastAPI, push) is excluded by default -- the listener
+# never imports it, and Playwright ships no musllinux wheels anyway.
+COPY pyproject.toml poetry.lock ./
+RUN poetry install --no-root && rm -rf $POETRY_CACHE_DIR
+
+COPY garmin_livetrack /app/garmin_livetrack
+RUN poetry install && rm -rf $POETRY_CACHE_DIR
+
+
+FROM base AS runtime
+
+# The email listener only talks to IMAP and to the API over HTTP; it never
+# touches Playwright/Chromium, so it can stay on Alpine -- no glibc
+# requirement, much smaller image than Dockerfile.api.
+COPY --from=builder ${VIRTUAL_ENV} ${VIRTUAL_ENV}
+COPY garmin_livetrack /app/garmin_livetrack
+
+WORKDIR /app
+
+ENTRYPOINT ["garmin-livetrack-email-listener"]

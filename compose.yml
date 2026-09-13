@@ -1,18 +1,64 @@
 version: "3"
 services:
   garmin-livetrack:
-    image: ghcr.io/johannes11833/garmin-livetrack-bot:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.listener
+    image: ghcr.io/johannes11833/garmin-livetrack-email-listener:latest
+    init: true
     env_file:
       - .env
+    environment:
+      - LIVETRACK_API_URL=http://garmin-livetrack-api:8000
     volumes:
       - ./garmin-livetrack-data:/app/garmin-livetrack-data
     depends_on:
-      - signal-api
+      - garmin-livetrack-api
 
-  signal-api:
-    image: bbernhard/signal-cli-rest-api:latest
+  garmin-livetrack-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: ghcr.io/johannes11833/garmin-livetrack-api:latest
+    env_file:
+      - .env
     environment:
-      - MODE=normal #supported modes: json-rpc, native, normal
-      - AUTO_RECEIVE_SCHEDULE=0 22 * * *
+      - LIVETRACK_API_HOST=0.0.0.0
     volumes:
-      - "./signal-api-data:/home/.local/share/signal-cli" #map "signal-cli-config" folder on host system into docker container. the folder contains the password and cryptographic keys when a new number is registered
+      - ./garmin-livetrack-data:/app/garmin-livetrack-data
+
+  garmin-livetrack-viewer:
+    build:
+      context: .
+      dockerfile: Dockerfile.viewer
+    image: ghcr.io/johannes11833/garmin-livetrack-viewer:latest
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - garmin-livetrack-api
+      - garmin-livetrack-viewer
+
+  # Exposes Caddy to the internet without opening any inbound ports: create a
+  # tunnel in the Cloudflare Zero Trust dashboard (Networks > Tunnels), add a
+  # Public Hostname pointing at http://caddy:80, and put its token in .env as
+  # CLOUDFLARE_TUNNEL_TOKEN.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - caddy
+
+volumes:
+  caddy_data:
+  caddy_config:

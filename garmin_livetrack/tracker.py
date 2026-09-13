@@ -1,0 +1,536 @@
+"""Tracker: one browser worker and isolated state for one LiveTrack share
+URL, plus TrackerManager for keeping track of all active sessions.
+"""
+
+import copy
+import os
+import queue
+import re
+import threading
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+import requests
+from playwright.sync_api import sync_playwright
+
+from garmin_livetrack import push
+
+POLL_SECONDS = 5
+TERMINAL_STATES = {"stopped", "ended", "error"}
+URL_RE = re.compile(
+    r"session/(?P<session_id>[0-9a-fA-F-]+)/token/(?P<token>[0-9A-Za-z]+)"
+)
+# How often the cleanup sweep runs.
+CLEANUP_INTERVAL_SECONDS = int(os.getenv("LIVETRACK_TRACKER_CLEANUP_INTERVAL_SECONDS", 15 * 60))
+# How long a finished (stopped/ended/error) tracker stays viewable before
+# being dropped.
+TRACKER_RETENTION_SECONDS = int(os.getenv("LIVETRACK_TRACKER_RETENTION_SECONDS", 24 * 60 * 60))
+# Safety net for a tracker stuck running (e.g. a hung Playwright worker):
+# force-stop and drop it after this long regardless of state.
+TRACKER_MAX_AGE_SECONDS = int(os.getenv("LIVETRACK_TRACKER_MAX_AGE_SECONDS", 2 * 24 * 60 * 60))
+
+
+def parse_livetrack_url(url: str):
+    match = URL_RE.search(url)
+    if not match:
+        raise ValueError("URL must contain /session/<id>/token/<token>.")
+    return match.group("session_id"), match.group("token")
+
+
+def normalize_point(raw: Dict[str, Any]) -> Dict[str, Any]:
+    position = raw.get("position") or {}
+    timestamp = raw.get("timestamp", raw.get("dateTime", raw.get("time")))
+    if isinstance(timestamp, str):
+        try:
+            timestamp = int(
+                datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
+                * 1000
+            )
+        except ValueError:
+            timestamp = None
+    metadata = raw.get("metaData") or raw.get("metadata") or {
+        "SPEED": raw.get("speedMetersPerSec", raw.get("speed")),
+        "ELEVATION": raw.get("altitude"),
+        "TOTAL_DISTANCE": raw.get("totalDistanceMeters"),
+        "TOTAL_DURATION": raw.get("totalDurationSecs"),
+        "ACTIVITY_TYPE": raw.get("activityType"),
+        "HEART_RATE": raw.get("heartRateBeatsPerMin"),
+        "POINT_STATUS": raw.get("pointStatus"),
+    }
+    return {
+        "latitude": raw.get("latitude", raw.get("lat", position.get("lat"))),
+        "longitude": raw.get(
+            "longitude", raw.get("lon", raw.get("lng", position.get("lon")))
+        ),
+        "timestamp": timestamp,
+        "metaData": metadata,
+        "events": raw.get("events", raw.get("eventTypes", [])),
+    }
+
+
+def normalize_course(data: Dict[str, Any]) -> List[Dict[str, float]]:
+    points = []
+    for course in data.get("courses") or []:
+        for point in course.get("coursePoints") or []:
+            position = point.get("position") or {}
+            latitude, longitude = position.get("lat"), position.get("lon")
+            if latitude is not None and longitude is not None:
+                points.append({"latitude": latitude, "longitude": longitude})
+    return points
+
+
+def is_live(session: Dict[str, Any]) -> bool:
+    if not session.get("viewable", True):
+        return False
+    end = session.get("end")
+    if not end:
+        return True
+    try:
+        return datetime.now(timezone.utc) < datetime.fromisoformat(
+            end.replace("Z", "+00:00")
+        )
+    except ValueError:
+        return True
+
+
+class Tracker:
+    """One browser worker and isolated state for one LiveTrack share URL."""
+
+    def __init__(self, url: str):
+        self.url = url
+        self.session_id, self.token = parse_livetrack_url(url)
+        self.lock = threading.Lock()
+        self.stop_requested = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.state = "starting"
+        self.started_at = datetime.now(timezone.utc)
+        self.ended_at: Optional[datetime] = None
+        self.error: Optional[str] = None
+        self.session: Optional[Dict[str, Any]] = None
+        self.track: List[Dict[str, Any]] = []
+        self.course: List[Dict[str, float]] = []
+        self.last_timestamp: Optional[int] = None
+        self.track_begin: Optional[str] = None
+        self.csrf_token: Optional[str] = None
+        self._start_notified = False
+        self._end_notified = False
+        self._profile_fetched = False
+        self.profile_image: Optional[bytes] = None
+        self.profile_image_content_type: Optional[str] = None
+        self._wake = threading.Event()
+        self._outbox: "queue.Queue[tuple[str, str, threading.Event, Dict[str, Any]]]" = (
+            queue.Queue()
+        )
+
+    def _mark_state(self, state: str) -> None:
+        """Sets self.state (and self.ended_at, once, if now terminal).
+        Caller must already hold self.lock."""
+        self.state = state
+        if state in TERMINAL_STATES and self.ended_at is None:
+            self.ended_at = datetime.now(timezone.utc)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.stop_requested.set()
+        self._wake.set()
+
+    def send_message(self, sender: str, content: str, timeout: float = 15.0) -> None:
+        if self.state in TERMINAL_STATES:
+            raise RuntimeError("This LiveTrack session has ended.")
+        done = threading.Event()
+        result: Dict[str, Any] = {}
+        self._outbox.put((sender, content, done, result))
+        self._wake.set()
+        if not done.wait(timeout):
+            raise RuntimeError("Timed out waiting to send the message.")
+        if result.get("error"):
+            raise RuntimeError(result["error"])
+
+    def _drain_outbox(self, page) -> None:
+        while True:
+            try:
+                sender, content, done, result = self._outbox.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                self._send_message(page, sender, content)
+            except Exception as error:
+                result["error"] = str(error)
+            done.set()
+
+    def request_stop(self) -> bool:
+        with self.lock:
+            if self.state in TERMINAL_STATES | {"stopping"}:
+                return False
+            self._mark_state("stopping")
+        self.stop()
+        return True
+
+    def snapshot(self) -> Dict[str, Any]:
+        with self.lock:
+            return copy.deepcopy(
+                {
+                    "id": self.session_id,
+                    "url": self.url,
+                    "state": self.state,
+                    "error": self.error,
+                    "session": self.session,
+                    "pointCount": len(self.track),
+                    "coursePointCount": len(self.course),
+                    "hasProfileImage": self.profile_image is not None,
+                }
+            )
+
+    def get_track(self) -> List[Dict[str, Any]]:
+        with self.lock:
+            return copy.deepcopy(self.track)
+
+    def get_course(self) -> List[Dict[str, float]]:
+        with self.lock:
+            return copy.deepcopy(self.course)
+
+    def _capture_csrf_token(self, request) -> None:
+        if "livetrack.garmin.com/api/" not in request.url:
+            return
+        token = request.headers.get("livetrack-csrf-token")
+        if token:
+            with self.lock:
+                changed = token != self.csrf_token
+                self.csrf_token = token
+            if changed:
+                print(f"[{self.session_id}] Garmin CSRF token captured.")
+
+    def _fetch_json(self, page, url: str, params: Dict[str, str]) -> Optional[Any]:
+        with self.lock:
+            csrf_token = self.csrf_token
+        if not csrf_token:
+            return None
+        result = page.evaluate(
+            """async ({url, params, csrfToken}) => {
+                try {
+                    const requestUrl = new URL(url);
+                    for (const [key, value] of Object.entries(params)) {
+                        requestUrl.searchParams.set(key, value);
+                    }
+                    const response = await fetch(requestUrl, {
+                        cache: 'no-store',
+                        headers: {'livetrack-csrf-token': csrfToken},
+                    });
+                    const text = await response.text();
+                    return {ok: response.ok, status: response.status,
+                            data: text ? JSON.parse(text) : null};
+                } catch (error) {
+                    return {ok: false, status: 0, error: String(error)};
+                }
+            }""",
+            {"url": url, "params": params, "csrfToken": csrf_token},
+        )
+        if result.get("ok"):
+            return result.get("data")
+        raise RuntimeError(f"Garmin API returned HTTP {result.get('status')}.")
+
+    def _post_json(self, page, url: str, body: Dict[str, Any]) -> Optional[Any]:
+        with self.lock:
+            csrf_token = self.csrf_token
+        if not csrf_token:
+            raise RuntimeError("Not ready yet: missing Garmin session token.")
+        result = page.evaluate(
+            """async ({url, body, csrfToken}) => {
+                try {
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        cache: 'no-store',
+                        headers: {
+                            'livetrack-csrf-token': csrfToken,
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(body),
+                    });
+                    const text = await response.text();
+                    return {ok: response.ok, status: response.status,
+                            data: text ? JSON.parse(text) : null};
+                } catch (error) {
+                    return {ok: false, status: 0, error: String(error)};
+                }
+            }""",
+            {"url": url, "body": body, "csrfToken": csrf_token},
+        )
+        if result.get("ok"):
+            return result.get("data")
+        raise RuntimeError(f"Garmin API returned HTTP {result.get('status')}.")
+
+    def _send_message(self, page, sender: str, content: str) -> None:
+        with self.lock:
+            session = self.session
+        if not session:
+            raise RuntimeError("Session not ready yet.")
+        unit_id = session.get("unitId")
+        profile_id = (session.get("publisher") or {}).get("connectUserProfileId")
+        if unit_id is None or profile_id is None:
+            raise RuntimeError("Missing unitId/userProfileId for this session.")
+        self._post_json(
+            page,
+            "https://livetrack.garmin.com/api/messages/spectator/text",
+            {
+                "from": sender,
+                "content": content,
+                "unitId": unit_id,
+                "userProfileId": profile_id,
+            },
+        )
+
+    def _save_session(self, data: Dict[str, Any]) -> bool:
+        session = dict(data)
+        live = is_live(session)
+        session["sessionStatus"] = "InProgress" if live else "Expired"
+        with self.lock:
+            self.session = session
+            self.track_begin = session.get("start") or self.track_begin
+            started = self._start_notified
+            self._start_notified = self._start_notified or live
+            ended = self._end_notified
+            self._end_notified = self._end_notified or not live
+        print(
+            f"[{self.session_id}] session: {session.get('sessionName')} | "
+            f"{session.get('userDisplayName')} | {session['sessionStatus']}"
+        )
+        name = str(session.get("sessionName") or self.session_id)
+        if live and not started:
+            push.notify(self.session_id, self.token, "LiveTrack started", name)
+        elif not live and not ended:
+            push.notify(self.session_id, self.token, "LiveTrack ended", name)
+        return live
+
+    def _fetch_profile_image(self, page, guid: str) -> None:
+        try:
+            profile = self._fetch_json(
+                page, f"https://livetrack.garmin.com/api/user/{guid}/profile", {}
+            )
+        except RuntimeError as error:
+            print(f"[{self.session_id}] profile fetch failed: {error}")
+            return
+        if not isinstance(profile, dict):
+            return
+        image_url = profile.get("profileImageMedium") or profile.get(
+            "profileImageSmall"
+        )
+        if not image_url:
+            return
+        try:
+            response = requests.get(image_url, timeout=10)
+            response.raise_for_status()
+        except requests.RequestException as error:
+            print(f"[{self.session_id}] profile image download failed: {error}")
+            return
+        with self.lock:
+            self.profile_image = response.content
+            self.profile_image_content_type = response.headers.get(
+                "Content-Type", "image/png"
+            )
+
+    def _save_track(self, data: Any) -> None:
+        raw_points = data if isinstance(data, list) else data.get("trackPoints", [])
+        points = [normalize_point(point) for point in raw_points if isinstance(point, dict)]
+        with self.lock:
+            new_points = [
+                point
+                for point in points
+                if point["latitude"] is not None
+                and point["longitude"] is not None
+                and point["timestamp"]
+                and (
+                    self.last_timestamp is None
+                    or point["timestamp"] > self.last_timestamp
+                )
+            ]
+            if new_points:
+                self.track.extend(new_points)
+                self.last_timestamp = new_points[-1]["timestamp"]
+                point = new_points[-1]
+                print(
+                    f"[{self.session_id}] track: +{len(new_points)} point(s) | "
+                    f"lat={point['latitude']:.5f} lon={point['longitude']:.5f} | "
+                    f"total={len(self.track)}"
+                )
+
+    def _save_course(self, data: Any) -> None:
+        if not isinstance(data, dict):
+            return
+        course = normalize_course(data)
+        if course:
+            with self.lock:
+                changed = course != self.course
+                self.course = course
+            if changed:
+                print(f"[{self.session_id}] course: {len(course)} point(s)")
+
+    def _run(self) -> None:
+        session_url = f"https://livetrack.garmin.com/api/sessions/{self.session_id}"
+        track_url = (
+            f"https://livetrack.garmin.com/api/sessions/{self.session_id}/track-points/common"
+        )
+        course_url = f"https://livetrack.garmin.com/api/sessions/{self.session_id}/courses"
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
+                try:
+                    page = browser.new_page()
+                    page.on("request", self._capture_csrf_token)
+                    page.goto(self.url, wait_until="domcontentloaded", timeout=30000)
+                    with self.lock:
+                        self._mark_state("waiting_for_garmin")
+                    while not self.stop_requested.is_set():
+                        self._drain_outbox(page)
+                        try:
+                            session = self._fetch_json(page, session_url, {"token": self.token})
+                            if not isinstance(session, dict):
+                                # Let Playwright process Garmin's initial request,
+                                # which supplies the CSRF header we must reuse.
+                                page.wait_for_timeout(1000)
+                                continue
+                            live = self._save_session(session)
+                            if not self._profile_fetched:
+                                guid = (session.get("publisher") or {}).get(
+                                    "garminGuid"
+                                )
+                                if guid:
+                                    self._profile_fetched = True
+                                    self._fetch_profile_image(page, guid)
+                            with self.lock:
+                                begin = self.track_begin
+                            track = self._fetch_json(
+                                page,
+                                track_url,
+                                {"token": self.token, "begin": begin or session.get("start", "")},
+                            )
+                            if track is not None:
+                                self._save_track(track)
+                            course = self._fetch_json(page, course_url, {"token": self.token})
+                            if course is not None:
+                                self._save_course(course)
+                            if not live:
+                                with self.lock:
+                                    self._mark_state("ended")
+                                return
+                            with self.lock:
+                                self._mark_state("running")
+                        except RuntimeError as error:
+                            with self.lock:
+                                self.error = str(error)
+                                self._mark_state("error")
+                            return
+                        self._wake.wait(POLL_SECONDS)
+                        self._wake.clear()
+                finally:
+                    browser.close()
+        except Exception as error:
+            with self.lock:
+                self.error = str(error)
+                self._mark_state("error")
+            return
+        with self.lock:
+            self._mark_state("stopped")
+
+
+class TrackerManager:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.trackers: Dict[str, Tracker] = {}
+        self._cleanup_stop = threading.Event()
+        self._cleanup_thread: Optional[threading.Thread] = None
+
+    def start(self, url: str) -> Tracker:
+        tracker = Tracker(url)
+        with self.lock:
+            existing = self.trackers.get(tracker.session_id)
+            if existing and existing.snapshot()["state"] not in TERMINAL_STATES:
+                raise ValueError("This LiveTrack session is already being tracked.")
+            self.trackers[tracker.session_id] = tracker
+        tracker.start()
+        return tracker
+
+    def start_dummy(self) -> Tracker:
+        # Imported lazily: dummy_tracker.py imports Tracker from this module,
+        # so importing it back here at module load time would be circular.
+        from garmin_livetrack.dummy_tracker import DummyTracker
+
+        tracker = DummyTracker()
+        with self.lock:
+            self.trackers[tracker.session_id] = tracker
+        tracker.start()
+        return tracker
+
+    def get(self, session_id: str) -> Tracker:
+        with self.lock:
+            tracker = self.trackers.get(session_id)
+        if not tracker:
+            raise KeyError(session_id)
+        return tracker
+
+    def stop(self, session_id: str) -> Tracker:
+        tracker = self.get(session_id)
+        if not tracker.request_stop():
+            raise ValueError("This LiveTrack session is already stopped.")
+        return tracker
+
+    def stop_all(self) -> None:
+        with self.lock:
+            trackers = list(self.trackers.values())
+        for tracker in trackers:
+            tracker.stop()
+
+    def start_cleanup(self) -> None:
+        """Periodically drops finished trackers (after TRACKER_RETENTION_SECONDS)
+        and force-stops/drops anything stuck running too long
+        (TRACKER_MAX_AGE_SECONDS), so memory doesn't grow unbounded."""
+        if self._cleanup_thread is not None:
+            return
+        self._cleanup_thread = threading.Thread(
+            target=self._cleanup_loop, daemon=True, name="tracker-cleanup"
+        )
+        self._cleanup_thread.start()
+
+    def stop_cleanup(self) -> None:
+        self._cleanup_stop.set()
+
+    def _cleanup_loop(self) -> None:
+        while not self._cleanup_stop.wait(CLEANUP_INTERVAL_SECONDS):
+            try:
+                self._cleanup_once()
+            except Exception as error:
+                print(f"Tracker cleanup sweep failed: {error}")
+
+    def _cleanup_once(self) -> None:
+        now = datetime.now(timezone.utc)
+        with self.lock:
+            trackers = list(self.trackers.items())
+
+        to_drop: List[str] = []
+        for session_id, tracker in trackers:
+            with tracker.lock:
+                state = tracker.state
+                started_at = tracker.started_at
+                ended_at = tracker.ended_at
+
+            if state in TERMINAL_STATES:
+                if (
+                    ended_at is not None
+                    and (now - ended_at).total_seconds() > TRACKER_RETENTION_SECONDS
+                ):
+                    to_drop.append(session_id)
+            elif (now - started_at).total_seconds() > TRACKER_MAX_AGE_SECONDS:
+                print(
+                    f"[{session_id}] tracker exceeded max age "
+                    f"({TRACKER_MAX_AGE_SECONDS}s) while still '{state}'; stopping it."
+                )
+                tracker.stop()
+                to_drop.append(session_id)
+
+        if not to_drop:
+            return
+        with self.lock:
+            for session_id in to_drop:
+                self.trackers.pop(session_id, None)
+        print(f"Cleanup: dropped {len(to_drop)} tracker(s): {', '.join(to_drop)}")

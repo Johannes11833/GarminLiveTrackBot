@@ -2,14 +2,66 @@ name: Build and Push Docker image
 
 on:
   push:
-    branches: [ "main" ]
+    tags:
+      - 'v*.*.*'
 
 jobs:
-  build:
+  version:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Bump poetry project version
+        run: pipx run poetry version "${{ steps.version.outputs.version }}"
+
+      - name: Bump Flutter app version
+        run: |
+          sed -i -E "s/^version: .*/version: ${{ steps.version.outputs.version }}+1/" garmin_livetrack_viewer/pubspec.yaml
+
+      - name: Open pull request with version bump
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "chore: bump version to ${{ steps.version.outputs.version }}"
+          title: "chore: bump version to ${{ steps.version.outputs.version }}"
+          body: "Automated version bump for tag `${{ github.ref_name }}`."
+          branch: release/${{ steps.version.outputs.version }}
+          base: main
+
+  build:
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - dockerfile: Dockerfile.api
+            image: garmin-livetrack-api
+          - dockerfile: Dockerfile.listener
+            image: garmin-livetrack-email-listener
+          - dockerfile: Dockerfile.viewer
+            image: garmin-livetrack-viewer
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Bump poetry project version
+        run: pipx run poetry version "${{ needs.version.outputs.version }}"
+
+      - name: Bump Flutter app version
+        run: |
+          sed -i -E "s/^version: .*/version: ${{ needs.version.outputs.version }}+1/" garmin_livetrack_viewer/pubspec.yaml
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -33,6 +85,23 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: ghcr.io/${{ env.owner_lc }}/garmin-livetrack-bot:latest
+          tags: |
+            ghcr.io/${{ env.owner_lc }}/${{ matrix.image }}:latest
+            ghcr.io/${{ env.owner_lc }}/${{ matrix.image }}:${{ needs.version.outputs.version }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create GitHub release with auto-generated notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "${{ github.ref_name }}" --generate-notes

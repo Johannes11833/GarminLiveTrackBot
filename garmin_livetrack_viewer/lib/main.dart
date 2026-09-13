@@ -1,0 +1,1547 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:developer';
+
+import 'package:fl_chart/fl_chart.dart';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:flutter_map_vector_tiles/flutter_map_vector_tiles.dart' as vt;
+import 'package:http/http.dart' as http;
+import 'package:latlong2/latlong.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:web/web.dart' as web;
+
+import 'push_service.dart';
+
+// API origin; empty means "same origin" (production behind a reverse proxy).
+// Override for local development, e.g.:
+//   flutter run -d chrome --dart-define=API_BASE_URL=http://127.0.0.1:8000
+const apiBaseUrl = String.fromEnvironment('API_BASE_URL');
+
+const _senderNameStorageKey = 'livetrack_sender_name';
+const _pushTokenStorageKey = 'livetrack_push_token';
+const _lastSessionIdStorageKey = 'livetrack_last_session_id';
+const _lastSessionTokenStorageKey = 'livetrack_last_session_token';
+
+String? _loadSavedSenderName() {
+  try {
+    return web.window.localStorage.getItem(_senderNameStorageKey);
+  } catch (_) {
+    return null;
+  }
+}
+
+void _saveSenderName(String name) {
+  try {
+    web.window.localStorage.setItem(_senderNameStorageKey, name);
+  } catch (_) {}
+}
+
+String? _loadSavedPushToken() {
+  try {
+    return web.window.localStorage.getItem(_pushTokenStorageKey);
+  } catch (_) {
+    return null;
+  }
+}
+
+void _savePushToken(String token) {
+  try {
+    web.window.localStorage.setItem(_pushTokenStorageKey, token);
+  } catch (_) {}
+}
+
+String? _loadSavedSessionId() {
+  try {
+    return web.window.localStorage.getItem(_lastSessionIdStorageKey);
+  } catch (_) {
+    return null;
+  }
+}
+
+void _saveSessionId(String id) {
+  try {
+    web.window.localStorage.setItem(_lastSessionIdStorageKey, id);
+  } catch (_) {}
+}
+
+String? _loadSavedSessionToken() {
+  try {
+    return web.window.localStorage.getItem(_lastSessionTokenStorageKey);
+  } catch (_) {
+    return null;
+  }
+}
+
+void _saveSessionToken(String token) {
+  try {
+    web.window.localStorage.setItem(_lastSessionTokenStorageKey, token);
+  } catch (_) {}
+}
+
+// Configurable colors: position (live dot), track (route), course (planned).
+const positionColor = Colors.deepPurple;
+const buttonColor = Colors.deepPurple;
+const trackColor = Colors.teal;
+const courseColor = Colors.pink;
+
+// Bright icons on dark button colors, dark icons on light button colors.
+final buttonIconColor = buttonColor.computeLuminance() < 0.5
+    ? Colors.white
+    : Colors.black87;
+
+// Width reserved on the right for the top-right FAB column (small FABs are
+// 40dp wide, plus its own 12px inset from the edge, plus a small gap).
+const _fabZoneWidth = 64.0;
+
+// Below this width, the bottom-left overlay becomes a full-width bottom
+// panel instead of a small fixed card (phones / narrow windows).
+const _compactWidthBreakpoint = 600.0;
+
+// Vector basemap: OpenFreeMap (free, no key).
+const vectorStyleUrl = 'https://tiles.openfreemap.org/styles/liberty';
+
+String _twoDigits(int n) => n.toString().padLeft(2, '0');
+
+String _formatTime(DateTime t) =>
+    '${_twoDigits(t.hour)}:${_twoDigits(t.minute)}:${_twoDigits(t.second)}';
+
+String _formatHourMinute(DateTime t) =>
+    '${_twoDigits(t.hour)}:${_twoDigits(t.minute)}';
+
+String _formatDuration(Object? value) {
+  if (value is! num) return '';
+  final total = value.toInt();
+  return '${total ~/ 3600}:${_twoDigits((total % 3600) ~/ 60)}:'
+      '${_twoDigits(total % 60)}';
+}
+
+String _formatDistance(Object? value) {
+  if (value is! num) return '';
+  if (value >= 1000) return '${(value / 1000).toStringAsFixed(2)} km';
+  return '${value.toStringAsFixed(0)} m';
+}
+
+String _formatSpeed(Object? value) {
+  if (value is! num) return '';
+  return '${(value * 3.6).toStringAsFixed(1)} km/h';
+}
+
+String _formatElevation(Object? value) {
+  if (value is! num) return '';
+  return '${value.toStringAsFixed(0)} m';
+}
+
+String _formatHeartRate(Object? value) {
+  if (value is! num) return '';
+  return '${value.toStringAsFixed(0)} bpm';
+}
+
+DateTime? _parseIsoDateTime(Object? value) {
+  if (value is! String || value.isEmpty) return null;
+  return DateTime.tryParse(value)?.toLocal();
+}
+
+void main() => runApp(const LiveTrackApp());
+
+// Flutter's default web/desktop ScrollBehavior only lets touch/stylus drags
+// pan a scrollable -- mouse-drag is excluded, which breaks click-and-drag
+// scrolling (e.g. the horizontal metric chips) when testing on desktop.
+class _AppScrollBehavior extends MaterialScrollBehavior {
+  @override
+  Set<PointerDeviceKind> get dragDevices => {
+    PointerDeviceKind.touch,
+    PointerDeviceKind.mouse,
+    PointerDeviceKind.stylus,
+  };
+}
+
+class LiveTrackApp extends StatelessWidget {
+  const LiveTrackApp({super.key});
+
+  @override
+  Widget build(BuildContext context) => MaterialApp(
+    title: 'Garmin LiveTrack Viewer',
+    theme: ThemeData(colorSchemeSeed: Colors.teal, useMaterial3: true),
+    scrollBehavior: _AppScrollBehavior(),
+    home: const LiveTrackPage(),
+  );
+}
+
+class LiveTrackPage extends StatefulWidget {
+  const LiveTrackPage({super.key});
+
+  @override
+  State<LiveTrackPage> createState() => _LiveTrackPageState();
+}
+
+class _LiveTrackPageState extends State<LiveTrackPage>
+    with SingleTickerProviderStateMixin {
+  static const _centerZoom = 13.0;
+
+  final _mapController = MapController();
+  late final AnimationController _cameraAnimation = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 600),
+  );
+  Timer? _timer;
+  List<LatLng> _track = [];
+  List<LatLng> _course = [];
+  bool _mapReady = false;
+  bool _userInteracted = false;
+  bool _hasPositionedMap = false;
+  bool _refreshing = false;
+  String _lastFingerprint = '';
+  String _lastToast = '';
+  Map<String, dynamic>? _session;
+  Map<String, dynamic>? _metaData;
+  List<(DateTime, double)> _heartRateHistory = [];
+  List<(DateTime, double)> _speedHistory = [];
+  List<(DateTime, double)> _elevationHistory = [];
+  DateTime? _lastUpdate;
+  String? _trackerState;
+  vt.Style? _vectorStyle;
+  PushService? _pushService;
+  String _appVersion = '';
+
+  Uri _apiUri(String path) {
+    if (apiBaseUrl.isNotEmpty) return Uri.parse('$apiBaseUrl$path');
+    return Uri.base.replace(path: path, query: null, fragment: null);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // Defer until after the first frame so ScaffoldMessenger is available
+    // for toasts (e.g. when no ?id= is provided).
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
+    _loadVectorStyle();
+    _loadAppVersion();
+    _timer = Timer.periodic(const Duration(seconds: 5), (_) => _refresh());
+    _initPush();
+  }
+
+  PushService _createPushService(String token) {
+    final service = PushService(apiBaseUrl: apiBaseUrl, token: token);
+    service.addListener(_onPushChanged);
+    service.init();
+    return service;
+  }
+
+  void _initPush() {
+    final urlToken = Uri.base.queryParameters['token']?.trim();
+    // iOS always launches an installed ("Add to Home Screen") PWA at the
+    // manifest's static start_url, dropping whatever query string was in
+    // the browser tab when it was installed -- so the token saved from an
+    // earlier visit with ?token=... in the URL is the only way to still
+    // show the bell icon once launched from the home screen. That save
+    // itself relies on localStorage, which iOS does NOT share between a
+    // Safari tab and the standalone app installed from it, so this only
+    // covers platforms where storage is shared (desktop, Android); iOS
+    // falls through to the manual-entry prompt in _promptForPushToken.
+    final token = (urlToken != null && urlToken.isNotEmpty)
+        ? urlToken
+        : _loadSavedPushToken();
+    if (token == null || token.isEmpty) return;
+    if (urlToken != null && urlToken.isNotEmpty) _savePushToken(urlToken);
+    _pushService = _createPushService(token);
+  }
+
+  void _handleNotificationTap() {
+    if (_pushService == null) {
+      _promptForPushToken();
+    } else {
+      _enableNotifications();
+    }
+  }
+
+  Future<void> _promptForPushToken() async {
+    final controller = TextEditingController();
+    final token = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Enter registration token'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Registration token'),
+          onSubmitted: (value) => Navigator.of(context).pop(value.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(controller.text.trim()),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (!mounted || token == null || token.isEmpty) return;
+    _savePushToken(token);
+    setState(() => _pushService = _createPushService(token));
+    await _enableNotifications();
+  }
+
+  void _onPushChanged() {
+    final service = _pushService;
+    if (service == null || service.status != PushStatus.failed) return;
+    _showToast('Notifications unavailable: ${service.error}');
+  }
+
+  Future<void> _enableNotifications() async {
+    final service = _pushService;
+    if (service == null) return;
+    await service.enable();
+    switch (service.status) {
+      case PushStatus.enabled:
+        _showToast('Notifications enabled.');
+      case PushStatus.denied:
+        _showToast('Notifications blocked in browser settings.');
+      case PushStatus.failed:
+        _showToast('Notifications unavailable: ${service.error}');
+      case PushStatus.unsupported:
+        _showToast(
+          'Notifications need HTTPS and a supported browser (iOS 16.4+ when installed).',
+        );
+    }
+  }
+
+  Future<void> _loadVectorStyle() async {
+    try {
+      final style = await vt.StyleReader(
+        uri: vectorStyleUrl,
+        logger: const vt.Logger.console(),
+      ).read();
+      if (!mounted) return;
+      setState(() => _vectorStyle = style);
+    } catch (error) {
+      log('Failed to load vector style: $error');
+    }
+  }
+
+  Future<void> _loadAppVersion() async {
+    final info = await PackageInfo.fromPlatform();
+    if (!mounted) return;
+    setState(() => _appVersion = info.version);
+  }
+
+  @override
+  void dispose() {
+    _pushService?.dispose();
+    _vectorStyle?.dispose();
+    _cameraAnimation.dispose();
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  Future<List<dynamic>> _getList(String path) async {
+    final response = await http.get(_apiUri(path));
+    if (response.statusCode != 200) {
+      throw Exception('API returned HTTP ${response.statusCode}.');
+    }
+    return jsonDecode(response.body) as List<dynamic>;
+  }
+
+  List<LatLng> _coordinates(List<dynamic> points) => points
+      .whereType<Map<String, dynamic>>()
+      .map(
+        (point) => LatLng(
+          (point['latitude'] as num).toDouble(),
+          (point['longitude'] as num).toDouble(),
+        ),
+      )
+      .toList();
+
+  List<(DateTime, double)> _metricSeries(
+    List<Map<String, dynamic>> trackData,
+    String metaKey, {
+    double Function(double)? transform,
+  }) {
+    final series = <(DateTime, double)>[];
+    for (final point in trackData) {
+      final meta = point['metaData'];
+      if (meta is! Map<String, dynamic>) continue;
+      final raw = meta[metaKey];
+      final timestamp = point['timestamp'];
+      if (raw is! num || timestamp is! num) continue;
+      final millis = timestamp >= 1000000000000
+          ? timestamp.toInt()
+          : timestamp.toInt() * 1000;
+      final value = transform != null
+          ? transform(raw.toDouble())
+          : raw.toDouble();
+      series.add((DateTime.fromMillisecondsSinceEpoch(millis), value));
+    }
+    return series;
+  }
+
+  // Falls back to the last id/token seen (from a previous ?id=/?sessionToken=
+  // in the URL, e.g. from tapping a notification) so reopening the app with
+  // neither in the URL -- closing and relaunching, or iOS's installed-PWA
+  // start_url dropping any query string -- still shows that last session.
+  String? _resolveSessionId() {
+    final idParam = Uri.base.queryParameters['id']?.trim();
+    if (idParam != null && idParam.isNotEmpty) {
+      _saveSessionId(idParam);
+      return idParam;
+    }
+    return _loadSavedSessionId();
+  }
+
+  // The Garmin LiveTrack share token (not the push-registration token, which
+  // uses the ?token= param). Required by the API's track/course/photo
+  // endpoints so knowing the session id alone isn't enough to read them.
+  String? _resolveSessionToken() {
+    final tokenParam = Uri.base.queryParameters['sessionToken']?.trim();
+    if (tokenParam != null && tokenParam.isNotEmpty) {
+      _saveSessionToken(tokenParam);
+      return tokenParam;
+    }
+    return _loadSavedSessionToken();
+  }
+
+  String? _profileImageUrl(String sessionId) {
+    final sessionToken = _resolveSessionToken();
+    if (sessionToken == null) return null;
+    return _apiUri(
+      '/trackings/$sessionId/token/${Uri.encodeComponent(sessionToken)}/profile-image',
+    ).toString();
+  }
+
+  Future<Map<String, dynamic>?> _getMap(String path) async {
+    final response = await http.get(_apiUri(path));
+    if (response.statusCode != 200) return null;
+    final body = jsonDecode(response.body);
+    return body is Map<String, dynamic> ? body : null;
+  }
+
+  String? _lastSenderName = _loadSavedSenderName();
+
+  Future<bool> _sendMessage(String sender, String content) async {
+    final sessionId = _resolveSessionId();
+    final sessionToken = _resolveSessionToken();
+    if (sessionId == null || sessionToken == null) return false;
+    _lastSenderName = sender;
+    _saveSenderName(sender);
+    try {
+      final response = await http.post(
+        _apiUri(
+          '/trackings/$sessionId/token/${Uri.encodeComponent(sessionToken)}/message',
+        ),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'sender': sender, 'content': content}),
+      );
+      if (response.statusCode != 204) {
+        throw Exception('API returned HTTP ${response.statusCode}.');
+      }
+      _showSnack('Message sent.');
+      return true;
+    } catch (error) {
+      _showSnack('Failed to send message: $error');
+      return false;
+    }
+  }
+
+  void _showSnack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  void _showToast(String message) {
+    if (message == _lastToast) return;
+    _lastToast = message;
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(content: Text(message), duration: const Duration(seconds: 7)),
+      );
+  }
+
+  Future<void> _refresh() async {
+    if (_refreshing) return;
+    _refreshing = true;
+    try {
+      final sessionId = _resolveSessionId();
+      if (sessionId == null) {
+        _showToast('No session. Pass ?id=<session id> to the app URL.');
+        return;
+      }
+      final sessionToken = _resolveSessionToken();
+      if (sessionToken == null) {
+        _showToast(
+          'Missing session token. Pass ?sessionToken=<token> to the app URL.',
+        );
+        return;
+      }
+      final encodedToken = Uri.encodeComponent(sessionToken);
+      final snapshot = await _getMap(
+        '/trackings/$sessionId/token/$encodedToken',
+      );
+      if (snapshot == null) {
+        _showToast('Tracking $sessionId not found.');
+        return;
+      }
+      final data = await Future.wait([
+        _getList('/trackings/$sessionId/token/$encodedToken/track'),
+        _getList('/trackings/$sessionId/token/$encodedToken/course'),
+      ]);
+      if (!mounted) return;
+      final trackData = data[0].whereType<Map<String, dynamic>>().toList();
+      final track = _coordinates(trackData);
+      final course = _coordinates(data[1]);
+      final lastMeta = trackData.isNotEmpty ? trackData.last['metaData'] : null;
+      final trackerState = snapshot['state']?.toString();
+      final fingerprint =
+          '$sessionId|${track.length}|${course.length}|'
+          '${track.isEmpty ? '' : track.last}|'
+          '${course.isEmpty ? '' : course.first}|$lastMeta|$trackerState';
+      if (fingerprint == _lastFingerprint) {
+        // Retry a pending auto-center even when nothing changed.
+        _centerMapOnce(track, course);
+        return;
+      }
+      _lastFingerprint = fingerprint;
+      _lastToast = '';
+      final lastTs = trackData.isNotEmpty ? trackData.last['timestamp'] : null;
+      final lastUpdate = lastTs is num
+          ? DateTime.fromMillisecondsSinceEpoch(
+              // Garmin timestamps can be in seconds or milliseconds.
+              lastTs >= 1000000000000 ? lastTs.toInt() : lastTs.toInt() * 1000,
+            )
+          : null;
+      setState(() {
+        _track = track;
+        _course = course;
+        _session = snapshot['session'] is Map<String, dynamic>
+            ? snapshot['session'] as Map<String, dynamic>
+            : null;
+        _metaData = lastMeta is Map<String, dynamic> ? lastMeta : null;
+        _heartRateHistory = _metricSeries(trackData, 'HEART_RATE');
+        _speedHistory = _metricSeries(
+          trackData,
+          'SPEED',
+          transform: (value) => value * 3.6,
+        );
+        _elevationHistory = _metricSeries(trackData, 'ELEVATION');
+        _lastUpdate = lastUpdate;
+        _trackerState = trackerState;
+      });
+      _centerMapOnce(track, course);
+    } catch (error, stackTrace) {
+      log("$error");
+      log("$stackTrace");
+      _showToast('Cannot reach API: $error');
+    } finally {
+      _refreshing = false;
+    }
+  }
+
+  List<(String, String)> _metaDataRows(Map<String, dynamic> meta) {
+    final rows = <(String, String)>[];
+    void add(String label, Object? value) {
+      if (value == null) return;
+      final text = value.toString().trim();
+      if (text.isNotEmpty && text != 'null') rows.add((label, text));
+    }
+
+    add('Distance', _formatDistance(meta['TOTAL_DISTANCE']));
+    add('Duration', _formatDuration(meta['TOTAL_DURATION']));
+    add('Speed', _formatSpeed(meta['SPEED']));
+    add('Elevation', _formatElevation(meta['ELEVATION']));
+    add('Heart rate', _formatHeartRate(meta['HEART_RATE']));
+    return rows;
+  }
+
+  Icon _metaIcon(String label) => switch (label) {
+    'Distance' => const Icon(Icons.route, size: 18),
+    'Duration' => const Icon(Icons.timer_outlined, size: 18),
+    'Speed' => const Icon(Icons.speed, size: 18),
+    'Elevation' => const Icon(Icons.terrain, size: 18),
+    'Heart rate' => const Icon(Icons.favorite, size: 18),
+    _ => const Icon(Icons.info_outline, size: 18),
+  };
+
+  void _centerMapOnce(List<LatLng> track, List<LatLng> course) {
+    if (_hasPositionedMap || !_mapReady || _userInteracted) return;
+    if (track.isEmpty && course.isEmpty) return;
+    _hasPositionedMap = true;
+    // Move after the frame so we never race an in-flight zoom gesture.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      try {
+        _mapController.move(
+          track.isNotEmpty ? track.last : course.first,
+          _centerZoom,
+        );
+      } catch (_) {
+        // Map may have been disposed; the next poll will retry.
+      }
+    });
+  }
+
+  void _animateCamera(
+    LatLng target,
+    double zoom, {
+    Duration duration = const Duration(milliseconds: 600),
+  }) {
+    if (!_mapReady) return;
+    final camera = _mapController.camera;
+    if (camera.center == target && camera.zoom == zoom) return;
+    final fromCenter = camera.center;
+    final fromZoom = camera.zoom;
+    LatLng lerp(LatLng a, LatLng b, double t) => LatLng(
+      a.latitude + (b.latitude - a.latitude) * t,
+      a.longitude + (b.longitude - a.longitude) * t,
+    );
+    void tick() {
+      final t = Curves.easeInOut.transform(_cameraAnimation.value);
+      try {
+        _mapController.move(
+          lerp(fromCenter, target, t),
+          fromZoom + (zoom - fromZoom) * t,
+        );
+      } catch (_) {}
+    }
+
+    _cameraAnimation.stop();
+    _cameraAnimation.duration = duration;
+    _cameraAnimation.reset();
+    _cameraAnimation.addListener(tick);
+    _cameraAnimation.forward().whenComplete(() {
+      if (mounted) _cameraAnimation.removeListener(tick);
+    });
+  }
+
+  void _focusPosition() {
+    if (!_mapReady) return;
+    final target = _track.isNotEmpty
+        ? _track.last
+        : (_course.isNotEmpty ? _course.first : null);
+    if (target == null) return;
+    _animateCamera(target, _centerZoom);
+  }
+
+  void _zoomBy(double delta) {
+    if (!_mapReady) return;
+    _animateCamera(
+      _mapController.camera.center,
+      _mapController.camera.zoom + delta,
+      duration: const Duration(milliseconds: 250),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final sessionName = _session?['sessionName']?.toString().trim();
+    final sessionId = _resolveSessionId();
+    final isCompact =
+        MediaQuery.sizeOf(context).width < _compactWidthBreakpoint;
+    final userOverlay = _LiveUserOverlay(
+      compact: isCompact,
+      userName: _session?['userDisplayName']?.toString().trim(),
+      sessionName: sessionName,
+      profileImageUrl: sessionId != null ? _profileImageUrl(sessionId) : null,
+      startTime: _parseIsoDateTime(_session?['start']),
+      lastUpdate: _lastUpdate,
+      ended: _trackerState == 'ended',
+      initialSender: _lastSenderName,
+      onSendMessage: _sendMessage,
+      chartSeries: [
+        if (_heartRateHistory.isNotEmpty)
+          _ChartSeries(
+            label: 'Heart rate',
+            icon: Icons.favorite,
+            color: Colors.redAccent,
+            unit: 'bpm',
+            points: _heartRateHistory,
+          ),
+        if (_speedHistory.isNotEmpty)
+          _ChartSeries(
+            label: 'Speed',
+            icon: Icons.speed,
+            color: Colors.blueAccent,
+            unit: 'km/h',
+            points: _speedHistory,
+          ),
+        if (_elevationHistory.isNotEmpty)
+          _ChartSeries(
+            label: 'Elevation',
+            icon: Icons.terrain,
+            color: Colors.teal,
+            unit: 'm',
+            points: _elevationHistory,
+          ),
+      ],
+    );
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Garmin LiveTrack'),
+        actions: [
+          _NotificationButton(
+            service: _pushService,
+            onPressed: _handleNotificationTap,
+          ),
+          IconButton(onPressed: _refresh, icon: const Icon(Icons.refresh)),
+        ],
+      ),
+      body: Column(
+        children: [
+          Expanded(
+            child: Stack(
+              children: [
+                FlutterMap(
+                  mapController: _mapController,
+                  options: MapOptions(
+                    initialCenter: const LatLng(0, 0),
+                    initialZoom: 2,
+                    interactionOptions: const InteractionOptions(
+                      flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
+                    ),
+                    onMapReady: () => _mapReady = true,
+                    onMapEvent: (event) {
+                      // Only real gestures count as user interaction; layout and
+                      // programmatic events (nonRotatedSizeChange, mapController)
+                      // fire on startup and must not block auto-centering.
+                      if (event.source != MapEventSource.mapController &&
+                          event.source != MapEventSource.nonRotatedSizeChange) {
+                        _userInteracted = true;
+                      }
+                    },
+                  ),
+                  children: [
+                    if (_vectorStyle != null)
+                      vt.VectorTileLayer(
+                        theme: _vectorStyle!.theme,
+                        tileProviders: _vectorStyle!.providers,
+                        rasterSources: _vectorStyle!.rasterSources,
+                        sprites: _vectorStyle!.sprites,
+                      ),
+                    PolylineLayer(
+                      polylines: [
+                        if (_course.isNotEmpty)
+                          Polyline(
+                            points: _course,
+                            color: courseColor,
+                            strokeWidth: 4,
+                          ),
+                        if (_track.isNotEmpty)
+                          Polyline(
+                            points: _track,
+                            color: trackColor,
+                            strokeWidth: 4,
+                          ),
+                      ],
+                    ),
+                    if (_track.isNotEmpty)
+                      MarkerLayer(
+                        markers: [
+                          Marker(
+                            point: _track.first,
+                            width: 28,
+                            height: 28,
+                            child: const _EndpointMarker(
+                              icon: Icons.flag,
+                              color: Colors.green,
+                            ),
+                          ),
+                          if (_trackerState == 'ended')
+                            Marker(
+                              point: _track.last,
+                              width: 28,
+                              height: 28,
+                              child: const _EndpointMarker(
+                                icon: Icons.sports_score,
+                                color: Colors.redAccent,
+                              ),
+                            )
+                          else
+                            Marker(
+                              point: _track.last,
+                              width: 72,
+                              height: 72,
+                              child: const _PulsingPositionMarker(),
+                            ),
+                        ],
+                      ),
+                  ],
+                ),
+                Positioned(
+                  top: 12,
+                  left: 12,
+                  // Leave room so this row's chips never scroll/overlap
+                  // underneath the FAB column pinned at top-right.
+                  right: _fabZoneWidth,
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_metaData != null && _metaData!.isNotEmpty)
+                          for (final entry in _metaDataRows(_metaData!)) ...[
+                            Tooltip(
+                              message: entry.$1,
+                              child: Card(
+                                margin: EdgeInsets.zero,
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 6,
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      _metaIcon(entry.$1),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        entry.$2,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodyMedium
+                                            ?.copyWith(
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                          ],
+                      ],
+                    ),
+                  ),
+                ),
+                if (isCompact)
+                  Positioned(left: 0, right: 0, bottom: 0, child: userOverlay)
+                else
+                  Positioned(left: 12, bottom: 12, child: userOverlay),
+                Positioned(
+                  right: 12,
+                  top: 12,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      FloatingActionButton.small(
+                        heroTag: 'focusPosition',
+                        backgroundColor: buttonColor,
+                        foregroundColor: buttonIconColor,
+                        tooltip: 'Focus current position',
+                        onPressed: _focusPosition,
+                        child: const Icon(Icons.my_location),
+                      ),
+                      const SizedBox(height: 8),
+                      FloatingActionButton.small(
+                        heroTag: 'zoomIn',
+                        backgroundColor: buttonColor,
+                        foregroundColor: buttonIconColor,
+                        tooltip: 'Zoom in',
+                        onPressed: () => _zoomBy(1),
+                        child: const Icon(Icons.add),
+                      ),
+                      const SizedBox(height: 8),
+                      FloatingActionButton.small(
+                        heroTag: 'zoomOut',
+                        backgroundColor: buttonColor,
+                        foregroundColor: buttonIconColor,
+                        tooltip: 'Zoom out',
+                        onPressed: () => _zoomBy(-1),
+                        child: const Icon(Icons.remove),
+                      ),
+                    ],
+                  ),
+                ),
+                Positioned(
+                  right: 4,
+                  bottom: 2,
+                  child: IgnorePointer(
+                    child: Text(
+                      'v$_appVersion',
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurface
+                            .withValues(alpha: 0.4),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NotificationButton extends StatelessWidget {
+  const _NotificationButton({required this.service, required this.onPressed});
+
+  final PushService? service;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final service = this.service;
+    if (service == null) {
+      // No token known yet (fresh install, e.g. iOS storage isolation) --
+      // still show the bell so there's something to tap to enter one.
+      return IconButton(
+        icon: const Icon(Icons.notifications_none),
+        tooltip: 'Enable notifications',
+        onPressed: onPressed,
+      );
+    }
+    return ListenableBuilder(
+      listenable: service,
+      builder: (context, _) {
+        final status = service.status;
+        final (icon, tooltip) = switch (status) {
+          PushStatus.enabled => (
+            Icons.notifications_active,
+            'Notifications enabled',
+          ),
+          PushStatus.denied => (
+            Icons.notifications_off,
+            'Notifications blocked',
+          ),
+          PushStatus.unsupported => (
+            Icons.notifications_none,
+            'Enable notifications',
+          ),
+          PushStatus.failed => (
+            Icons.notifications_none,
+            'Notifications unavailable',
+          ),
+        };
+        final enabled = status != PushStatus.enabled && !service.busy;
+        return IconButton(
+          icon: Icon(icon),
+          tooltip: tooltip,
+          onPressed: enabled ? onPressed : null,
+        );
+      },
+    );
+  }
+}
+
+class _ChartSeries {
+  const _ChartSeries({
+    required this.label,
+    required this.icon,
+    required this.color,
+    required this.unit,
+    required this.points,
+  });
+
+  final String label;
+  final IconData icon;
+  final Color color;
+  final String unit;
+  final List<(DateTime, double)> points;
+}
+
+class _LiveUserOverlay extends StatefulWidget {
+  const _LiveUserOverlay({
+    required this.userName,
+    required this.onSendMessage,
+    this.profileImageUrl,
+    this.sessionName,
+    this.startTime,
+    this.lastUpdate,
+    this.ended = false,
+    this.initialSender,
+    this.chartSeries = const [],
+    this.compact = false,
+  });
+
+  final String? userName;
+  final String? profileImageUrl;
+  final String? sessionName;
+  final DateTime? startTime;
+  final DateTime? lastUpdate;
+  final bool ended;
+  final String? initialSender;
+  final List<_ChartSeries> chartSeries;
+  // On narrow screens (phones), render as a full-width draggable bottom
+  // panel instead of a small fixed-width card.
+  final bool compact;
+  final Future<bool> Function(String sender, String content) onSendMessage;
+
+  @override
+  State<_LiveUserOverlay> createState() => _LiveUserOverlayState();
+}
+
+class _LiveUserOverlayState extends State<_LiveUserOverlay>
+    with SingleTickerProviderStateMixin {
+  bool _composing = false;
+  bool _sending = false;
+  bool _showChart = false;
+  int _selectedMetricIndex = 0;
+  late final _senderController = TextEditingController(
+    text: widget.initialSender,
+  );
+  final _contentController = TextEditingController();
+
+  // Drives the compact panel's open/closed fraction (0 = just the live
+  // status row, 1 = everything). Dragging updates it live; on release it
+  // always animates the rest of the way to whichever end is closer.
+  late final AnimationController _expandController = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 220),
+  );
+
+  // Vertical drag distance (px) needed to go from fully collapsed to fully
+  // expanded; not tied to actual content height, just how the drag feels.
+  static const _dragExtent = 220.0;
+
+  @override
+  void dispose() {
+    _expandController.dispose();
+    _senderController.dispose();
+    _contentController.dispose();
+    super.dispose();
+  }
+
+  void _onCompactDragUpdate(DragUpdateDetails details) {
+    _expandController.value -= details.primaryDelta! / _dragExtent;
+  }
+
+  void _onCompactDragEnd(DragEndDetails details) {
+    final velocity = details.primaryVelocity ?? 0;
+    final expand = velocity.abs() > 200
+        ? velocity <
+              0 // flung upward -> open
+        : _expandController.value > 0.5;
+    _expandController.animateTo(expand ? 1 : 0, curve: Curves.easeOut);
+  }
+
+  void _toggleCompact() {
+    final expand = _expandController.value < 0.5;
+    _expandController.animateTo(expand ? 1 : 0, curve: Curves.easeOut);
+  }
+
+  Future<void> _submit() async {
+    final sender = _senderController.text.trim();
+    final content = _contentController.text.trim();
+    if (sender.isEmpty || content.isEmpty) return;
+    setState(() => _sending = true);
+    final success = await widget.onSendMessage(sender, content);
+    if (!mounted) return;
+    setState(() {
+      _sending = false;
+      if (success) {
+        _composing = false;
+        _contentController.clear();
+      }
+    });
+  }
+
+  void _cancel() {
+    setState(() {
+      _composing = false;
+      _contentController.clear();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final userName = widget.userName;
+    if (userName == null || userName.isEmpty) return const SizedBox.shrink();
+
+    if (widget.compact) {
+      final timestamps = _timestampsText(context);
+      return Material(
+        elevation: 4,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _toggleCompact,
+                onVerticalDragUpdate: _onCompactDragUpdate,
+                onVerticalDragEnd: _onCompactDragEnd,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 36,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 8),
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.outlineVariant,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                    _liveStatusHeader(
+                      context,
+                      userName,
+                      trailing: RotationTransition(
+                        turns: Tween(
+                          begin: 0.0,
+                          end: 0.5,
+                        ).animate(_expandController),
+                        child: const Icon(Icons.expand_more, size: 18),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              SizeTransition(
+                sizeFactor: _expandController,
+                alignment: Alignment.topCenter,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (widget.chartSeries.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      _chartSection(context),
+                    ],
+                    ..._messageComposer(),
+                    if (timestamps != null) ...[
+                      const SizedBox(height: 8),
+                      timestamps,
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    const cardWidth = 370.0;
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: cardWidth),
+      child: Card(
+        margin: EdgeInsets.zero,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: _desktopContent(context, userName),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _liveStatusHeader(
+    BuildContext context,
+    String userName, {
+    VoidCallback? onTap,
+    Widget? trailing,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      child: Row(
+        children: [
+          _ProfileAvatar(imageUrl: widget.profileImageUrl, ended: widget.ended),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                RichText(
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  text: TextSpan(
+                    style: Theme.of(context).textTheme.bodyMedium,
+                    children: [
+                      TextSpan(
+                        text: userName,
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      TextSpan(
+                        text: widget.ended
+                            ? "'s LiveTrack session has ended"
+                            : ' is live',
+                      ),
+                    ],
+                  ),
+                ),
+                if (widget.sessionName != null &&
+                    widget.sessionName!.isNotEmpty)
+                  Text(
+                    widget.sessionName!,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+              ],
+            ),
+          ),
+          ?trailing,
+        ],
+      ),
+    );
+  }
+
+  Widget _chartSection(BuildContext context) {
+    final selectedIndex = _selectedMetricIndex.clamp(
+      0,
+      widget.chartSeries.length - 1,
+    );
+    final selected = widget.chartSeries[selectedIndex];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _MetricChart(series: selected, height: 160),
+        const SizedBox(height: 8),
+        SegmentedButton<int>(
+          segments: [
+            for (final (index, series) in widget.chartSeries.indexed)
+              ButtonSegment(
+                value: index,
+                label: Text(series.label),
+                icon: Icon(series.icon, size: 16),
+              ),
+          ],
+          selected: {selectedIndex},
+          showSelectedIcon: false,
+          onSelectionChanged: (selection) =>
+              setState(() => _selectedMetricIndex = selection.first),
+        ),
+      ],
+    );
+  }
+
+  List<Widget> _messageComposer() {
+    if (widget.ended) return const [];
+    return [
+      const SizedBox(height: 10),
+      if (_composing) ...[
+        TextField(
+          controller: _senderController,
+          enabled: !_sending,
+          decoration: const InputDecoration(
+            labelText: 'Your name',
+            isDense: true,
+          ),
+          textInputAction: TextInputAction.next,
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _contentController,
+          enabled: !_sending,
+          decoration: const InputDecoration(
+            labelText: 'Message',
+            isDense: true,
+          ),
+          minLines: 1,
+          maxLines: 3,
+          autofocus: true,
+          textInputAction: TextInputAction.send,
+          onSubmitted: (_) => _submit(),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            TextButton(
+              onPressed: _sending ? null : _cancel,
+              child: const Text('Cancel'),
+            ),
+            const SizedBox(width: 4),
+            FilledButton.icon(
+              onPressed: _sending ? null : _submit,
+              icon: _sending
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.send, size: 18),
+              label: const Text('Send'),
+            ),
+          ],
+        ),
+      ] else
+        ElevatedButton.icon(
+          onPressed: () => setState(() => _composing = true),
+          icon: const Icon(Icons.send, size: 18),
+          label: const Text('Send message'),
+        ),
+    ];
+  }
+
+  Widget? _timestampsText(BuildContext context) {
+    if (widget.startTime == null && widget.lastUpdate == null) return null;
+    return Text(
+      [
+        if (widget.startTime != null)
+          'Started ${_formatTime(widget.startTime!)}',
+        if (widget.lastUpdate != null)
+          'Updated ${_formatTime(widget.lastUpdate!)}',
+      ].join('  •  '),
+      style: Theme.of(context).textTheme.bodySmall,
+    );
+  }
+
+  List<Widget> _desktopContent(BuildContext context, String userName) {
+    final timestamps = _timestampsText(context);
+    return [
+      _liveStatusHeader(
+        context,
+        userName,
+        onTap: widget.chartSeries.isNotEmpty
+            ? () => setState(() => _showChart = !_showChart)
+            : null,
+        trailing: widget.chartSeries.isNotEmpty
+            ? Icon(_showChart ? Icons.expand_less : Icons.expand_more, size: 18)
+            : null,
+      ),
+      if (_showChart && widget.chartSeries.isNotEmpty) ...[
+        const SizedBox(height: 8),
+        _chartSection(context),
+      ],
+      ..._messageComposer(),
+      if (timestamps != null) ...[const SizedBox(height: 8), timestamps],
+    ];
+  }
+}
+
+class _ProfileAvatar extends StatelessWidget {
+  const _ProfileAvatar({required this.imageUrl, required this.ended});
+
+  final String? imageUrl;
+  final bool ended;
+
+  static const _diameter = 40.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final backgroundColor = ended
+        ? Theme.of(context).colorScheme.surfaceContainerHighest
+        : Theme.of(context).colorScheme.primaryContainer;
+    final fallbackIcon = Icon(
+      Icons.directions_bike,
+      color: ended ? Theme.of(context).disabledColor : null,
+    );
+    final url = imageUrl;
+    if (url == null) {
+      return CircleAvatar(
+        backgroundColor: backgroundColor,
+        child: fallbackIcon,
+      );
+    }
+    return ClipOval(
+      child: SizedBox(
+        width: _diameter,
+        height: _diameter,
+        child: ColoredBox(
+          color: backgroundColor,
+          child: Image.network(
+            url,
+            fit: BoxFit.cover,
+            errorBuilder: (context, error, stackTrace) =>
+                Center(child: fallbackIcon),
+            loadingBuilder: (context, child, progress) =>
+                progress == null ? child : Center(child: fallbackIcon),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MetricChart extends StatelessWidget {
+  const _MetricChart({required this.series, this.height = 120});
+
+  final _ChartSeries series;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    final samples = series.points;
+    final start = samples.first.$1;
+    final spots = [
+      for (final sample in samples)
+        FlSpot(sample.$1.difference(start).inSeconds.toDouble(), sample.$2),
+    ];
+    final values = samples.map((sample) => sample.$2);
+    final minY =
+        ((values.reduce((a, b) => a < b ? a : b) - 10) / 10).floorToDouble() *
+        10;
+    final maxY =
+        ((values.reduce((a, b) => a > b ? a : b) + 10) / 10).ceilToDouble() *
+        10;
+    final yInterval = ((maxY - minY) / 3).clamp(10, double.infinity).toDouble();
+    final xInterval = (spots.last.x / 5).clamp(1, double.infinity).toDouble();
+    return SizedBox(
+      height: height,
+      child: LineChart(
+        LineChartData(
+          minY: minY,
+          maxY: maxY,
+          gridData: const FlGridData(show: true, drawVerticalLine: false),
+          borderData: FlBorderData(show: false),
+          titlesData: FlTitlesData(
+            topTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false),
+            ),
+            rightTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false),
+            ),
+            leftTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: 32,
+                interval: yInterval,
+                getTitlesWidget: (value, meta) => Text(
+                  value.toInt().toString(),
+                  style: const TextStyle(fontSize: 10),
+                ),
+              ),
+            ),
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: 20,
+                interval: xInterval,
+                getTitlesWidget: (value, meta) {
+                  final time = start.add(Duration(seconds: value.round()));
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      _formatHourMinute(time),
+                      style: const TextStyle(fontSize: 9),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+          lineTouchData: LineTouchData(
+            touchTooltipData: LineTouchTooltipData(
+              getTooltipItems: (touchedSpots) => touchedSpots
+                  .map(
+                    (spot) => LineTooltipItem(
+                      '${spot.y.toStringAsFixed(0)} ${series.unit}',
+                      const TextStyle(color: Colors.white),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
+          lineBarsData: [
+            LineChartBarData(
+              spots: spots,
+              isCurved: true,
+              color: series.color,
+              barWidth: 2,
+              dotData: const FlDotData(show: false),
+              belowBarData: BarAreaData(
+                show: true,
+                color: series.color.withValues(alpha: 0.15),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EndpointMarker extends StatelessWidget {
+  const _EndpointMarker({required this.icon, required this.color});
+
+  final IconData icon;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.white, width: 2),
+        boxShadow: const [
+          BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2)),
+        ],
+      ),
+      child: Icon(icon, color: Colors.white, size: 16),
+    );
+  }
+}
+
+class _PulsingPositionMarker extends StatefulWidget {
+  const _PulsingPositionMarker();
+
+  @override
+  State<_PulsingPositionMarker> createState() => _PulsingPositionMarkerState();
+}
+
+class _PulsingPositionMarkerState extends State<_PulsingPositionMarker>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 2),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dot = SizedBox(
+      width: 24,
+      height: 24,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: positionColor,
+          border: Border.all(color: Colors.white, width: 3),
+          boxShadow: const [
+            BoxShadow(
+              color: Colors.black26,
+              blurRadius: 4,
+              offset: Offset(0, 2),
+            ),
+          ],
+        ),
+      ),
+    );
+    return AnimatedBuilder(
+      animation: _controller,
+      child: dot,
+      builder: (context, child) {
+        final t = _controller.value;
+        return Stack(
+          alignment: Alignment.center,
+          children: [
+            Container(
+              width: 24 + 48 * t,
+              height: 24 + 48 * t,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: positionColor.withValues(alpha: 0.30 * (1 - t)),
+              ),
+            ),
+            child!,
+          ],
+        );
+      },
+    );
+  }
+}
