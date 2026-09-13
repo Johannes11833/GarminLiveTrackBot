@@ -1,7 +1,8 @@
-<h1>Garmin Livetrack Bot</h1>
+<h1>GarminLiveTrack Server</h1>
 
 <h2>Table of Contents</h2>
 
+- [Demo](#demo)
 - [Docker Setup](#docker-setup)
   - [Docker compose setup](#docker-compose-setup)
   - [Run livetrack bot w/o a container](#run-livetrack-bot-wo-a-container)
@@ -10,6 +11,26 @@
   - [Web viewer \& push notifications](#web-viewer--push-notifications)
   - [Registration token](#registration-token)
   - [Example .env file](#example-env-file)
+
+## Demo
+
+<table align="center">
+  <tr>
+    <td align="center">
+      <img src="docs/demo_mobile.png" width="260" alt="Mobile viewer showing the live map and session stats" /><br/>
+      <sub>Mobile: live map with route, distance, speed and elevation</sub>
+    </td>
+    <td align="center">
+      <img src="docs/demo_mobile_with_graph.png" width="260" alt="Mobile viewer with the heart rate graph expanded" /><br/>
+      <sub>Mobile: heart rate graph expanded from the session card</sub>
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/demo_desktop.png" width="700" alt="Desktop viewer showing the live map, session stats and heart rate graph" /><br/>
+  <sub>Desktop: live map and session card with heart rate, speed and elevation graphs side by side</sub>
+</p>
 
 ## Docker Setup
 ### Docker compose setup
